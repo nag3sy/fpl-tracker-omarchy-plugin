@@ -606,24 +606,44 @@ BarWidget {
           width: parent.width
           spacing: Style.space(6)
 
-          Button {
-            text: "Overview"
-            selected: root.currentTab === "overview"
-            foreground: root.bar.foreground
-            accent: root.fplGreen
-            horizontalPadding: Style.spacing.controlPaddingX
-            verticalPadding: Style.spacing.controlPaddingY
-            onClicked: root.currentTab = "overview"
+          // Button's own `selected` fill reads a theme-controlled token that
+          // defaults to `foreground`, not the `accent` we pass — so it can't
+          // be forced green per-instance. A manual underline guarantees the
+          // active tab reads in the fixed FPL green regardless of theme.
+          Column {
+            spacing: Style.space(3)
+            Button {
+              text: "Overview"
+              selected: root.currentTab === "overview"
+              foreground: root.bar.foreground
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY
+              onClicked: root.currentTab = "overview"
+            }
+            Rectangle {
+              width: parent.width
+              height: Style.space(2)
+              radius: 1
+              color: root.currentTab === "overview" ? root.fplGreen : "transparent"
+            }
           }
 
-          Button {
-            text: "Squad"
-            selected: root.currentTab === "squad"
-            foreground: root.bar.foreground
-            accent: root.fplGreen
-            horizontalPadding: Style.spacing.controlPaddingX
-            verticalPadding: Style.spacing.controlPaddingY
-            onClicked: root.currentTab = "squad"
+          Column {
+            spacing: Style.space(3)
+            Button {
+              text: "Squad"
+              selected: root.currentTab === "squad"
+              foreground: root.bar.foreground
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY
+              onClicked: root.currentTab = "squad"
+            }
+            Rectangle {
+              width: parent.width
+              height: Style.space(2)
+              radius: 1
+              color: root.currentTab === "squad" ? root.fplGreen : "transparent"
+            }
           }
 
           Button {
@@ -635,14 +655,22 @@ BarWidget {
             onClicked: Qt.openUrlExternally("https://fantasy.premierleague.com/my-team")
           }
 
-          Button {
-            text: "Settings"
-            selected: root.currentTab === "settings"
-            foreground: root.bar.foreground
-            accent: root.fplGreen
-            horizontalPadding: Style.spacing.controlPaddingX
-            verticalPadding: Style.spacing.controlPaddingY
-            onClicked: root.currentTab = "settings"
+          Column {
+            spacing: Style.space(3)
+            Button {
+              text: "Settings"
+              selected: root.currentTab === "settings"
+              foreground: root.bar.foreground
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY
+              onClicked: root.currentTab = "settings"
+            }
+            Rectangle {
+              width: parent.width
+              height: Style.space(2)
+              radius: 1
+              color: root.currentTab === "settings" ? root.fplGreen : "transparent"
+            }
           }
         }
 
@@ -951,7 +979,6 @@ BarWidget {
             description: "Display the live gameweek points total next to the icon in the bar."
             checked: root.showPointsInBar
             foreground: root.bar.foreground
-            accent: root.fplGreen
             onClicked: root.setShowPointsInBar(!root.showPointsInBar)
           }
 
@@ -1001,7 +1028,6 @@ BarWidget {
                   anchors.verticalCenter: parent.verticalCenter
                   trackHeight: Math.max(18, Math.round(Style.spacing.controlHeight * 0.45))
                   foreground: root.bar.foreground
-                  accent: root.fplGreen
                   checked: root.hiddenLeagueIds.indexOf(modelData.id) < 0
                   onToggled: root.toggleLeagueHidden(modelData.id)
                 }
