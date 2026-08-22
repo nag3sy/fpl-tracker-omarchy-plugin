@@ -2,15 +2,15 @@
   "schemaVersion": 1,
   "id": "io.github.nag3sy.fpl-tracker",
   "name": "Omarchy FPL Tracker",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "nag3sy",
   "license": "MIT",
-  "description": "Live Fantasy Premier League gameweek points, overall rank, and mini-league standings for your FPL team",
+  "description": "Live Fantasy Premier League gameweek points, squad breakdown, chip tracker, rank movement, and league standings for your FPL team",
   "kinds": ["bar-widget"],
   "entryPoints": { "barWidget": "BarWidget.qml" },
   "barWidget": {
     "displayName": "Omarchy FPL Tracker",
-    "description": "Live FPL gameweek points, rank, and league standings",
+    "description": "Live FPL points, squad, chips, rank movement, and leagues",
     "category": "Info",
     "allowMultiple": false,
     "defaultSection": "right"
