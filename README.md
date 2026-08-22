@@ -161,11 +161,45 @@ Planned, not yet built:
 
 Have a feature request? Open an issue.
 
-## Privileges
+## Security
 
-None. This plugin never requests `sudo`/`pkexec`, never touches system
-configuration, and never reads or writes any file other than its own
-settings file above.
+This plugin was self-reviewed against the Omarchy plugin marketplace's
+security baseline before submission. Summary — full detail on the network
+side is in [How it works](#how-it-works) above:
+
+- **No command execution, anywhere.** No `sudo`, `pkexec`, `doas`, `eval`,
+  shell invocation, or spawned process exists in this plugin. The entire
+  runtime surface is five `XMLHttpRequest` calls and one
+  `Qt.openUrlExternally`.
+- **One fixed host, HTTPS only.** Every request goes to the hardcoded
+  `fantasy.premierleague.com` — never a user-supplied or discovered URL.
+  Your Team ID is validated against `^[1-9][0-9]{0,9}$` before it's used
+  anywhere and is always URL-encoded, so it can't redirect a request
+  elsewhere. Every response is size-capped before parsing and every request
+  has an explicit timeout.
+- **The Site button is inert data.** It opens a single hardcoded URL on an
+  explicit click only — never automatically, and never with any data
+  appended to it.
+- **No credentials, ever.** There's nothing to steal: no login, no API key,
+  no token, no session of any kind exists anywhere in the plugin.
+- **Local storage is one file, and it's not sensitive.** Your Team ID and
+  Settings-tab choices live in
+  `~/.local/state/omarchy/settings/fpl-tracker.json` — the same public data
+  anyone can already see on your team's fantasy.premierleague.com page.
+  Removing the plugin doesn't delete it; see [Remove](#remove).
+- **FPL-sourced text is never treated as rich text.** Team/manager/player/
+  league names come from FPL's API and are rendered with
+  `textFormat: Text.PlainText` everywhere they're shown, so a crafted name
+  can't be interpreted as markup.
+- **No privileges.** Never requests `sudo`/`pkexec`, never touches system
+  configuration, and never reads or writes any file other than its own
+  settings file above.
+
+The one residual risk worth naming: QML's `XMLHttpRequest` has no exposed
+API to restrict redirect targets or protocols, so a DNS-hijack or
+compromised-cert scenario against `fantasy.premierleague.com` isn't
+something this plugin can defend against at its own layer — that's a
+platform limitation, not something specific to this code.
 
 ## License
 
