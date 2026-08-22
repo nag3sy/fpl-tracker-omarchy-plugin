@@ -46,6 +46,14 @@ browser tab.
 - **Zero login, zero config** — only your public Team ID is needed, saved
   locally. No FPL account credentials or API key, ever.
 
+## Screenshots
+
+<img src="screenshots/bar-pill.png" alt="Bar pill" height="23"> — one click away in the bar.
+
+| Overview | Squad | Settings |
+| --- | --- | --- |
+| ![Overview tab](screenshots/overview.png) | ![Squad tab](screenshots/squad.png) | ![Settings tab](screenshots/settings.png) |
+
 ## Setup
 
 Click the widget in the bar and enter your FPL **Team ID** — the number in
