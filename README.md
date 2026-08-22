@@ -32,8 +32,9 @@ browser tab.
   current from the live gameweek calendar every refresh, so it flips back to
   Ready at the gameweek ~20 reset with no special-cased date logic.
 - **Live rank movement** — a LiveFPL-style indicator: your overall rank's
-  absolute and percentage change versus the last *completed* gameweek, ▲
-  green or ▼ red.
+  absolute and percentage change versus the last *completed* gameweek, ▲ or
+  ▼, colored with your Omarchy theme's own accent — the widget follows your
+  theme throughout rather than imposing its own palette.
 - **Pick your leagues** — every classic league you're in shows up with its
   own rank and an up/down arrow by default; the Settings tab lets you hide
   the ones you don't care about, useful if you're in a lot of them.
