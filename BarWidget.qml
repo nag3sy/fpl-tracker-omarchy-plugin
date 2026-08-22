@@ -9,6 +9,14 @@ BarWidget {
   id: root
   moduleName: "io.github.nag3sy.fpl-tracker"
 
+  // Fixed FPL-brand palette (matches the marketing header) for this widget's
+  // own status colors — captain/active/positive highlights and negative/error
+  // states. Deliberately NOT theme-derived: unlike the icon or panel chrome,
+  // these carry fantasy-football meaning (rank up vs. down, chip active,
+  // error) that should read the same regardless of the user's Omarchy theme.
+  readonly property color fplGreen: "#00ff87"
+  readonly property color fplRed: "#ff5470"
+
   property string teamId: ""
   property bool editingId: false
   property string currentTab: "overview" // "overview" | "squad" | "settings"
@@ -328,7 +336,7 @@ BarWidget {
 
     Text {
       text: "" // fa-futbol-o — plain outline ball, monotone like the rest of the bar icons
-      color: root.errorMessage !== "" && !root.entryData ? Color.urgent : root.bar.barForeground
+      color: root.errorMessage !== "" && !root.entryData ? root.fplRed : root.bar.barForeground
       font.family: root.bar.fontFamily
       font.pixelSize: Style.font.body
     }
@@ -336,7 +344,7 @@ BarWidget {
     Text {
       visible: !root.vertical && root.pillText !== ""
       text: root.pillText
-      color: root.errorMessage !== "" && !root.entryData ? Color.urgent : root.bar.barForeground
+      color: root.errorMessage !== "" && !root.entryData ? root.fplRed : root.bar.barForeground
       font.family: root.bar.fontFamily
       font.pixelSize: Style.font.body
     }
@@ -368,7 +376,7 @@ BarWidget {
         text: modelData.code
         textFormat: Text.PlainText
         anchors.horizontalCenter: parent.horizontalCenter
-        color: parent.activeNow ? Color.accent : (modelData.status === "available" ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.8))
+        color: parent.activeNow ? root.fplGreen : (modelData.status === "available" ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.8))
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.bodySmall
         font.bold: parent.activeNow || modelData.status === "available"
@@ -381,7 +389,7 @@ BarWidget {
           : ""
         textFormat: Text.PlainText
         anchors.horizontalCenter: parent.horizontalCenter
-        color: parent.activeNow ? Color.accent : Qt.darker(root.bar.foreground, 1.6)
+        color: parent.activeNow ? root.fplGreen : Qt.darker(root.bar.foreground, 1.6)
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption
       }
@@ -417,7 +425,7 @@ BarWidget {
         Text {
           visible: modelData.multiplier > 1
           text: "×" + modelData.multiplier
-          color: Color.accent
+          color: root.fplGreen
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
           font.bold: true
@@ -441,7 +449,7 @@ BarWidget {
         anchors.verticalCenter: parent.verticalCenter
         text: modelData.name + (modelData.isCaptain ? "  (C)" : modelData.isViceCaptain ? "  (V)" : "")
         textFormat: Text.PlainText // player name is FPL-sourced; never interpret it as rich text
-        color: modelData.isCaptain ? Color.accent : root.bar.foreground
+        color: modelData.isCaptain ? root.fplGreen : root.bar.foreground
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.bodySmall
         font.bold: modelData.isCaptain
@@ -602,6 +610,7 @@ BarWidget {
             text: "Overview"
             selected: root.currentTab === "overview"
             foreground: root.bar.foreground
+            accent: root.fplGreen
             horizontalPadding: Style.spacing.controlPaddingX
             verticalPadding: Style.spacing.controlPaddingY
             onClicked: root.currentTab = "overview"
@@ -611,6 +620,7 @@ BarWidget {
             text: "Squad"
             selected: root.currentTab === "squad"
             foreground: root.bar.foreground
+            accent: root.fplGreen
             horizontalPadding: Style.spacing.controlPaddingX
             verticalPadding: Style.spacing.controlPaddingY
             onClicked: root.currentTab = "squad"
@@ -629,6 +639,7 @@ BarWidget {
             text: "Settings"
             selected: root.currentTab === "settings"
             foreground: root.bar.foreground
+            accent: root.fplGreen
             horizontalPadding: Style.spacing.controlPaddingX
             verticalPadding: Style.spacing.controlPaddingY
             onClicked: root.currentTab = "settings"
@@ -652,7 +663,7 @@ BarWidget {
               height: Style.space(7)
               y: (parent.height - height) / 2
               radius: width / 2
-              color: root.eventStatus === "live" ? Color.accent : Qt.darker(root.bar.foreground, 1.8)
+              color: root.eventStatus === "live" ? root.fplGreen : Qt.darker(root.bar.foreground, 1.8)
             }
 
             Text {
@@ -674,7 +685,7 @@ BarWidget {
             Text {
               visible: root.activeChip !== ""
               text: "· " + Model.chipLabel(root.activeChip)
-              color: Color.accent
+              color: root.fplGreen
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
@@ -765,7 +776,7 @@ BarWidget {
               Text {
                 visible: root.rankDelta !== null
                 text: (root.rankDelta > 0 ? "▲ " : root.rankDelta < 0 ? "▼ " : "") + Model.formatSignedNumber(root.rankDelta) + " (" + Model.formatSignedPercent(root.rankPercent) + ")"
-                color: root.rankDelta > 0 ? Color.accent : (root.rankDelta < 0 ? Color.urgent : Qt.darker(root.bar.foreground, 1.4))
+                color: root.rankDelta > 0 ? root.fplGreen : (root.rankDelta < 0 ? root.fplRed : Qt.darker(root.bar.foreground, 1.4))
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
               }
@@ -852,7 +863,7 @@ BarWidget {
                     Text {
                       visible: modelData.delta !== 0
                       text: modelData.delta > 0 ? "▲" : "▼"
-                      color: modelData.delta > 0 ? Color.accent : Color.urgent
+                      color: modelData.delta > 0 ? root.fplGreen : root.fplRed
                       font.family: root.bar.fontFamily
                       font.pixelSize: Style.font.caption
                     }
@@ -887,7 +898,7 @@ BarWidget {
           Text {
             visible: root.activeChip !== ""
             text: "Chip active: " + Model.chipLabel(root.activeChip)
-            color: Color.accent
+            color: root.fplGreen
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.bodySmall
             font.bold: true
@@ -940,6 +951,7 @@ BarWidget {
             description: "Display the live gameweek points total next to the icon in the bar."
             checked: root.showPointsInBar
             foreground: root.bar.foreground
+            accent: root.fplGreen
             onClicked: root.setShowPointsInBar(!root.showPointsInBar)
           }
 
@@ -989,6 +1001,7 @@ BarWidget {
                   anchors.verticalCenter: parent.verticalCenter
                   trackHeight: Math.max(18, Math.round(Style.spacing.controlHeight * 0.45))
                   foreground: root.bar.foreground
+                  accent: root.fplGreen
                   checked: root.hiddenLeagueIds.indexOf(modelData.id) < 0
                   onToggled: root.toggleLeagueHidden(modelData.id)
                 }
@@ -1012,7 +1025,7 @@ BarWidget {
               : root.refreshing ? "Updating…"
               : root.lastUpdated ? "Updated " + Model.pad2(root.lastUpdated.getHours()) + ":" + Model.pad2(root.lastUpdated.getMinutes())
               : ""
-            color: root.errorMessage !== "" ? Color.urgent : Qt.darker(root.bar.foreground, 1.5)
+            color: root.errorMessage !== "" ? root.fplRed : Qt.darker(root.bar.foreground, 1.5)
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
           }
