@@ -148,6 +148,19 @@ per-player contributions were always computed as *live points × FPL's own
 multiplier*, so they were unaffected by this — only the Overview headline
 number was, and it's fixed.
 
+## Upcoming features
+
+Planned, not yet built:
+
+- **Fixtures** — match results and live scores for the gameweek, not just
+  your own points.
+- **Price tracking** — flag players in your squad (or on your watchlist)
+  who are likely to rise or fall in value, before it happens.
+- **Fixture difficulty rating** — at-a-glance FDR for every team's next five
+  gameweeks, for transfer and captaincy planning.
+
+Have a feature request? Open an issue.
+
 ## Privileges
 
 None. This plugin never requests `sudo`/`pkexec`, never touches system
