@@ -48,10 +48,7 @@ BarWidget {
   readonly property int maxPicksBytes: 500000
   readonly property int maxEntryBytes: 2000000
   // fpl-tracker.json only ever holds a team ID, a bool, and a handful of
-  // league IDs — a few hundred bytes in practice. FileView has no
-  // size-limited or streaming read, so this is the earliest point plugin
-  // code can refuse an oversized file; a very large file has already been
-  // fully read into memory by FileView by the time this runs.
+  // league IDs — a few hundred bytes in practice.
   readonly property int maxConfigFileBytes: 65536
 
   property bool popupOpen: false
@@ -103,21 +100,77 @@ BarWidget {
   readonly property var benchRows: squadRows.filter(function(r) { return r.onBench })
 
   // ---- persistence ------------------------------------------------------
+  // FileView has no size-limited or streaming read: whatever sits at `path`
+  // is read fully into memory the instant loading is allowed to start,
+  // before any application code (applyConfig's length check included) runs.
+  // So the byte cap has to gate *loading itself*, not just the parsed
+  // result — an external `stat` runs first, and FileView (kept at
+  // `preload: false`, only ever armed by checkAndLoadConfig) is never even
+  // pointed at the file unless that stat says it's safe to read. `stat -L`
+  // resolves symlinks first, so a state path replaced with a symlink to a
+  // device/FIFO/oversized file is caught by what it resolves to, not the
+  // symlink's own (tiny) size/type.
+
+  readonly property string configPath: Quickshell.env("HOME") + "/.local/state/omarchy/settings/fpl-tracker.json"
 
   FileView {
     id: configFile
-    path: Quickshell.env("HOME") + "/.local/state/omarchy/settings/fpl-tracker.json"
+    preload: false
+    path: root.configPath
     watchChanges: true
     atomicWrites: true
     printErrors: false
-    onLoaded: root.applyConfig(text())
-    onFileChanged: reload()
+    onLoaded: {
+      root.applyConfig(text())
+      // Re-arm the gate: without this, `preload` would stay true forever
+      // after the first successful load, and any later reload() (from the
+      // next onFileChanged) would read unconditionally instead of going
+      // through checkAndLoadConfig()'s stat check again.
+      preload = false
+    }
+    onFileChanged: root.checkAndLoadConfig()
   }
+
+  Process {
+    id: configStatCheck
+    command: ["stat", "-L", "-c", "%s %F", root.configPath]
+    stdout: StdioCollector {
+      id: configStatOutput
+      onStreamFinished: root.onConfigStatChecked(configStatOutput.text)
+    }
+  }
+
+  function checkAndLoadConfig() {
+    if (configStatCheck.running) return
+    configStatCheck.running = true
+  }
+
+  function onConfigStatChecked(output) {
+    var parts = String(output || "").trim().split(" ")
+    var size = parseInt(parts[0], 10)
+    var type = parts.slice(1).join(" ")
+    if (isNaN(size) || size > root.maxConfigFileBytes || type !== "regular file") {
+      // Missing, oversized, or not a plain file (symlink target included,
+      // since stat -L resolved it) — never hand this to FileView. Whatever
+      // config is already in memory (possibly none yet) stays as-is, same
+      // as any other refused/corrupt state file.
+      return
+    }
+    // preload:false -> reload() only re-arms (clears the "prepared" flag)
+    // without reading; preload:true then performs the actual async read.
+    configFile.preload = false
+    configFile.reload()
+    configFile.preload = true
+  }
+
+  Component.onCompleted: root.checkAndLoadConfig()
 
   function applyConfig(raw) {
     if (raw && raw.length > root.maxConfigFileBytes) {
-      // Oversized/corrupt state file — don't hand it to JSON.parse, fall
-      // back to the unconfigured setup prompt like any other parse failure.
+      // Belt-and-suspenders only: checkAndLoadConfig()'s stat check is what
+      // actually keeps an oversized file from being read into memory. This
+      // just covers the (tiny) TOCTOU window where the file grows between
+      // that stat and FileView's read.
       return
     }
     try {
