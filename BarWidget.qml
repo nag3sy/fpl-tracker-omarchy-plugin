@@ -37,6 +37,23 @@ BarWidget {
 
   property int refreshIntervalMs: 90000
 
+  // Response caps below are enforced during transfer (aborted as soon as
+  // they're exceeded — see the fetch* functions), not just checked against
+  // the finished body. Sized generously per endpoint's actual payload shape:
+  // bootstrap carries every player/team in the game, the rest are scoped to
+  // one entry/gameweek.
+  readonly property int maxBootstrapBytes: 8000000
+  readonly property int maxHistoryBytes: 2000000
+  readonly property int maxLiveElementsBytes: 3000000
+  readonly property int maxPicksBytes: 500000
+  readonly property int maxEntryBytes: 2000000
+  // fpl-tracker.json only ever holds a team ID, a bool, and a handful of
+  // league IDs — a few hundred bytes in practice. FileView has no
+  // size-limited or streaming read, so this is the earliest point plugin
+  // code can refuse an oversized file; a very large file has already been
+  // fully read into memory by FileView by the time this runs.
+  readonly property int maxConfigFileBytes: 65536
+
   property bool popupOpen: false
   function close() { popupOpen = false }
 
@@ -98,6 +115,11 @@ BarWidget {
   }
 
   function applyConfig(raw) {
+    if (raw && raw.length > root.maxConfigFileBytes) {
+      // Oversized/corrupt state file — don't hand it to JSON.parse, fall
+      // back to the unconfigured setup prompt like any other parse failure.
+      return
+    }
     try {
       var cfg = JSON.parse(raw || "{}")
       if (cfg.teamId && Model.isValidTeamId(cfg.teamId)) root.teamId = String(cfg.teamId)
@@ -160,11 +182,24 @@ BarWidget {
 
   function fetchBootstrap() {
     var xhr = new XMLHttpRequest()
+    var aborted = false
     xhr.onreadystatechange = function() {
+      // Reject on declared size before the body downloads at all.
+      if (xhr.readyState === XMLHttpRequest.HEADERS_RECEIVED) {
+        var declaredLength = parseInt(xhr.getResponseHeader("Content-Length"), 10)
+        if (declaredLength > root.maxBootstrapBytes) { aborted = true; xhr.abort() }
+        return
+      }
+      // No (or a dishonest) Content-Length: abort mid-transfer the moment
+      // what's buffered so far crosses the cap.
+      if (xhr.readyState === XMLHttpRequest.LOADING) {
+        if (xhr.responseText.length > root.maxBootstrapBytes) { aborted = true; xhr.abort() }
+        return
+      }
       if (xhr.readyState !== XMLHttpRequest.DONE) return
-      if (xhr.status !== 200) return
+      if (aborted || xhr.status !== 200) return
       try {
-        if (xhr.responseText.length > 8000000) return
+        if (xhr.responseText.length > root.maxBootstrapBytes) return
         var data = JSON.parse(xhr.responseText)
         root.bootstrapEvents = data.events || []
         root.elementsById = Model.indexById(data.elements)
@@ -183,11 +218,21 @@ BarWidget {
   function fetchHistory() {
     if (!Model.isValidTeamId(root.teamId)) return
     var xhr = new XMLHttpRequest()
+    var aborted = false
     xhr.onreadystatechange = function() {
+      if (xhr.readyState === XMLHttpRequest.HEADERS_RECEIVED) {
+        var declaredLength = parseInt(xhr.getResponseHeader("Content-Length"), 10)
+        if (declaredLength > root.maxHistoryBytes) { aborted = true; xhr.abort() }
+        return
+      }
+      if (xhr.readyState === XMLHttpRequest.LOADING) {
+        if (xhr.responseText.length > root.maxHistoryBytes) { aborted = true; xhr.abort() }
+        return
+      }
       if (xhr.readyState !== XMLHttpRequest.DONE) return
-      if (xhr.status !== 200) return
+      if (aborted || xhr.status !== 200) return
       try {
-        if (xhr.responseText.length > 2000000) return
+        if (xhr.responseText.length > root.maxHistoryBytes) return
         var data = JSON.parse(xhr.responseText)
         root.historyCurrent = data.current || []
         root.historyChips = data.chips || []
@@ -203,12 +248,23 @@ BarWidget {
   function fetchLiveElements(eventId) {
     root.beginRequest()
     var xhr = new XMLHttpRequest()
+    var aborted = false
     xhr.onreadystatechange = function() {
+      if (xhr.readyState === XMLHttpRequest.HEADERS_RECEIVED) {
+        var declaredLength = parseInt(xhr.getResponseHeader("Content-Length"), 10)
+        if (declaredLength > root.maxLiveElementsBytes) { aborted = true; xhr.abort() }
+        return
+      }
+      if (xhr.readyState === XMLHttpRequest.LOADING) {
+        if (xhr.responseText.length > root.maxLiveElementsBytes) { aborted = true; xhr.abort() }
+        return
+      }
       if (xhr.readyState !== XMLHttpRequest.DONE) return
       root.endRequest()
+      if (aborted) return
       if (xhr.status === 200) {
         try {
-          if (xhr.responseText.length > 3000000) throw "too large"
+          if (xhr.responseText.length > root.maxLiveElementsBytes) throw "too large"
           var data = JSON.parse(xhr.responseText)
           root.liveElementsById = Model.indexById(data.elements)
         } catch (e) {
@@ -225,12 +281,23 @@ BarWidget {
   function fetchPicks(eventId) {
     root.beginRequest()
     var xhr = new XMLHttpRequest()
+    var aborted = false
     xhr.onreadystatechange = function() {
+      if (xhr.readyState === XMLHttpRequest.HEADERS_RECEIVED) {
+        var declaredLength = parseInt(xhr.getResponseHeader("Content-Length"), 10)
+        if (declaredLength > root.maxPicksBytes) { aborted = true; xhr.abort() }
+        return
+      }
+      if (xhr.readyState === XMLHttpRequest.LOADING) {
+        if (xhr.responseText.length > root.maxPicksBytes) { aborted = true; xhr.abort() }
+        return
+      }
       if (xhr.readyState !== XMLHttpRequest.DONE) return
       root.endRequest()
+      if (aborted) return
       if (xhr.status === 200) {
         try {
-          if (xhr.responseText.length > 500000) throw "too large"
+          if (xhr.responseText.length > root.maxPicksBytes) throw "too large"
           root.picksData = JSON.parse(xhr.responseText)
         } catch (e) {
           // Keep whatever picks data we already had.
@@ -247,12 +314,23 @@ BarWidget {
     if (!Model.isValidTeamId(root.teamId)) return
     root.beginRequest()
     var xhr = new XMLHttpRequest()
+    var aborted = false
     xhr.onreadystatechange = function() {
+      if (xhr.readyState === XMLHttpRequest.HEADERS_RECEIVED) {
+        var declaredLength = parseInt(xhr.getResponseHeader("Content-Length"), 10)
+        if (declaredLength > root.maxEntryBytes) { aborted = true; xhr.abort() }
+        return
+      }
+      if (xhr.readyState === XMLHttpRequest.LOADING) {
+        if (xhr.responseText.length > root.maxEntryBytes) { aborted = true; xhr.abort() }
+        return
+      }
       if (xhr.readyState !== XMLHttpRequest.DONE) return
       root.endRequest()
+      if (aborted) { root.errorMessage = "Couldn't read FPL data"; return }
       if (xhr.status === 200) {
         try {
-          if (xhr.responseText.length > 2000000) throw "too large"
+          if (xhr.responseText.length > root.maxEntryBytes) throw "too large"
           var data = JSON.parse(xhr.responseText)
           root.entryData = data
           root.errorMessage = ""

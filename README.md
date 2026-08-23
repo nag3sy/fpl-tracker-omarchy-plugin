@@ -175,8 +175,12 @@ side is in [How it works](#how-it-works) above:
   `fantasy.premierleague.com` — never a user-supplied or discovered URL.
   Your Team ID is validated against `^[1-9][0-9]{0,9}$` before it's used
   anywhere and is always URL-encoded, so it can't redirect a request
-  elsewhere. Every response is size-capped before parsing and every request
-  has an explicit timeout.
+  elsewhere. Every one of the five requests is aborted mid-transfer the
+  moment its response crosses an endpoint-specific byte cap — checked
+  against the declared `Content-Length` as soon as headers arrive, and
+  again against bytes buffered so far as the body streams in — rather than
+  downloaded in full and only then discarded. Every request also has an
+  explicit timeout.
 - **The Site button is inert data.** It opens a single hardcoded URL on an
   explicit click only — never automatically, and never with any data
   appended to it.
@@ -186,7 +190,11 @@ side is in [How it works](#how-it-works) above:
   Settings-tab choices live in
   `~/.local/state/omarchy/settings/fpl-tracker.json` — the same public data
   anyone can already see on your team's fantasy.premierleague.com page.
-  Removing the plugin doesn't delete it; see [Remove](#remove).
+  Removing the plugin doesn't delete it; see [Remove](#remove). It's read
+  through Quickshell's `FileView`, which has no size-limited or streaming
+  read of its own — so the plugin refuses to `JSON.parse` it if it's grown
+  past a generous 64KB ceiling (this file normally runs a few hundred
+  bytes), falling back to the unconfigured setup prompt instead.
 - **FPL-sourced text is never treated as rich text.** Team/manager/player/
   league names come from FPL's API and are rendered with
   `textFormat: Text.PlainText` everywhere they're shown, so a crafted name
