@@ -100,18 +100,18 @@ BarWidget {
   readonly property var benchRows: squadRows.filter(function(r) { return r.onBench })
 
   // ---- persistence ------------------------------------------------------
-  // FileView has no size-limited or streaming read: whatever sits at `path`
-  // is read fully into memory the instant loading is allowed to start,
-  // before any application code (applyConfig's length check included) runs.
-  // So the byte cap has to gate *loading itself*, not just the parsed
-  // result — an external `stat` runs first, and FileView (kept at
-  // `preload: false`, only ever armed by checkAndLoadConfig) is never even
-  // pointed at the file unless that stat says it's safe to read. `stat -L`
-  // resolves symlinks first, so a state path replaced with a symlink to a
-  // device/FIFO/oversized file is caught by what it resolves to, not the
-  // symlink's own (tiny) size/type.
+  // FileView has no size-limited or streaming read, and its own read path
+  // is check-then-open internally (stat the path, then separately open()
+  // it) — so it's never used to *read* the state file, only to write it
+  // (setText/atomicWrites) and to watch it for external changes. Reads go
+  // through scripts/read-state-file, which opens the path with a single
+  // O_NOFOLLOW|O_NONBLOCK descriptor, validates type and size with fstat()
+  // on that same descriptor, and only then reads up to the cap from it —
+  // no separate check step for a symlink/FIFO/oversized-file swap to land
+  // in between. See that script for the full rationale.
 
   readonly property string configPath: Quickshell.env("HOME") + "/.local/state/omarchy/settings/fpl-tracker.json"
+  readonly property string readStateScript: String(Qt.resolvedUrl("scripts/read-state-file")).replace("file://", "")
 
   FileView {
     id: configFile
@@ -120,57 +120,34 @@ BarWidget {
     watchChanges: true
     atomicWrites: true
     printErrors: false
-    onLoaded: {
-      root.applyConfig(text())
-      // Re-arm the gate: without this, `preload` would stay true forever
-      // after the first successful load, and any later reload() (from the
-      // next onFileChanged) would read unconditionally instead of going
-      // through checkAndLoadConfig()'s stat check again.
-      preload = false
-    }
-    onFileChanged: root.checkAndLoadConfig()
+    onFileChanged: root.readConfig()
   }
 
   Process {
-    id: configStatCheck
-    command: ["stat", "-L", "-c", "%s %F", root.configPath]
+    id: configReader
+    command: [root.readStateScript, root.configPath, String(root.maxConfigFileBytes)]
     stdout: StdioCollector {
-      id: configStatOutput
-      onStreamFinished: root.onConfigStatChecked(configStatOutput.text)
+      id: configReaderOutput
+      // Rejected reads (missing, symlink, wrong type, oversized) print
+      // nothing and exit non-zero; applyConfig("") is a no-op since it
+      // only ever *sets* fields it finds present in the parsed object, so
+      // treating that the same as a genuine empty file is safe either way.
+      onStreamFinished: root.applyConfig(configReaderOutput.text)
     }
   }
 
-  function checkAndLoadConfig() {
-    if (configStatCheck.running) return
-    configStatCheck.running = true
+  function readConfig() {
+    if (configReader.running) return
+    configReader.running = true
   }
 
-  function onConfigStatChecked(output) {
-    var parts = String(output || "").trim().split(" ")
-    var size = parseInt(parts[0], 10)
-    var type = parts.slice(1).join(" ")
-    if (isNaN(size) || size > root.maxConfigFileBytes || type !== "regular file") {
-      // Missing, oversized, or not a plain file (symlink target included,
-      // since stat -L resolved it) — never hand this to FileView. Whatever
-      // config is already in memory (possibly none yet) stays as-is, same
-      // as any other refused/corrupt state file.
-      return
-    }
-    // preload:false -> reload() only re-arms (clears the "prepared" flag)
-    // without reading; preload:true then performs the actual async read.
-    configFile.preload = false
-    configFile.reload()
-    configFile.preload = true
-  }
-
-  Component.onCompleted: root.checkAndLoadConfig()
+  Component.onCompleted: root.readConfig()
 
   function applyConfig(raw) {
     if (raw && raw.length > root.maxConfigFileBytes) {
-      // Belt-and-suspenders only: checkAndLoadConfig()'s stat check is what
-      // actually keeps an oversized file from being read into memory. This
-      // just covers the (tiny) TOCTOU window where the file grows between
-      // that stat and FileView's read.
+      // Belt-and-suspenders only: read-state-file's own size check (against
+      // the open descriptor, not the path) is what actually keeps an
+      // oversized file from being read at all.
       return
     }
     try {

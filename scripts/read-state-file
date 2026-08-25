@@ -1,0 +1,53 @@
+#!/usr/bin/perl
+#
+# Reads a small trusted-format state file for BarWidget.qml, refusing
+# anything that isn't a plain regular file within a byte cap. One
+# descriptor does the open, the type/size check, and the read, so there
+# is no window between "checked" and "read" for the path to be swapped
+# out from under us:
+#
+#   - O_NOFOLLOW: a symlink at the final path component makes sysopen
+#     fail outright, instead of transparently following it to whatever
+#     it points at.
+#   - O_NONBLOCK: opening a FIFO for read-only normally blocks until a
+#     writer shows up; with O_NONBLOCK the open returns immediately
+#     instead, so a FIFO dropped at the path can't hang this process.
+#   - fstat($fh)/`-f _` runs against the already-open descriptor, so it
+#     reports on the exact bytes we're about to read, not on whatever
+#     currently sits at the path.
+#
+# On any rejection (missing, symlink, not a regular file, oversized,
+# unreadable) this prints nothing and exits non-zero. Success prints
+# just the file's bytes and exits 0.
+use strict;
+use warnings;
+use Fcntl qw(O_RDONLY O_NOFOLLOW O_NONBLOCK);
+
+my ($path, $cap) = @ARGV;
+exit 1 unless defined $path && defined $cap && $cap =~ /\A[0-9]+\z/;
+
+sysopen(my $fh, $path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) or exit 1;
+
+my @st = stat($fh) or exit 1;
+exit 1 unless -f _;
+exit 1 if $st[7] > $cap;
+
+binmode $fh;
+binmode STDOUT;
+
+my $data = '';
+my $total = 0;
+while (1) {
+  my $chunk;
+  my $n = sysread($fh, $chunk, 4096);
+  exit 1 unless defined $n;
+  last if $n == 0;
+  $total += $n;
+  # File grew after the fstat above (e.g. concurrent writer) — refuse
+  # rather than hand QML a silently truncated document.
+  exit 1 if $total > $cap;
+  $data .= $chunk;
+}
+
+print STDOUT $data;
+exit 0;
