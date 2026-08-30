@@ -83,7 +83,7 @@ browser tab.
 
 <img src="screenshots/bar-pill.png" alt="Bar pill" height="23"> — one click away in the bar. Icon-only by default so it blends with the rest of the bar's glyphs; your live gameweek points can be switched on in Settings.
 
-<img src="screenshots/setup.png" alt="Setup" width="402"> — onboarding takes seconds: paste your Team ID, done.
+<img src="screenshots/onboarding.png" alt="Setup" width="402"> — onboarding takes seconds: paste your Team ID, done.
 
 ## Setup
 
