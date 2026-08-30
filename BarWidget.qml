@@ -9,9 +9,15 @@ BarWidget {
   id: root
   moduleName: "io.github.nag3sy.fpl-tracker"
 
+  // Positive/success accent (rank moved up, player price rose). Red is the
+  // theme's own Color.urgent. Gold marks the captain. Same green as the
+  // Dockhand plugin uses for its healthy/active states.
+  readonly property color successGreen: "#4ade80"
+  readonly property color captainGold: "#f5c542"
+
   property string teamId: ""
   property bool editingId: false
-  property string currentTab: "overview" // "overview" | "squad" | "settings"
+  property string currentTab: "overview" // "overview" | "squad" | "fixtures" | "settings"
   property bool showPointsInBar: false
   property var hiddenLeagueIds: []
 
@@ -25,10 +31,17 @@ BarWidget {
   property var historyCurrent: []
   property var bootstrapChips: []
   property var historyChips: []
+  // Raw per-gameweek fixture lists (parsed into view models by derived
+  // properties below, since bootstrap's teamsById may land after the
+  // fixtures do). Fetched with the lightweight `?event=N` form — see
+  // Model.fixturesUrl.
+  property var rawCurrentFixtures: []
+  property var rawNextFixtures: []
 
   // Incremented/decremented around the fast-cycle requests (entry, picks,
-  // live elements) only — bootstrap/history are background refreshes and
-  // shouldn't drive the popup's "Updating…" spinner or last-updated time.
+  // live elements, current fixtures) only — bootstrap/history/next-fixtures
+  // are background refreshes and shouldn't drive the popup's "Updating…"
+  // spinner or last-updated time.
   property int pendingRequests: 0
   readonly property bool refreshing: pendingRequests > 0
   readonly property bool loading: refreshing && !entryData
@@ -40,13 +53,15 @@ BarWidget {
   // Response caps below are enforced during transfer (aborted as soon as
   // they're exceeded — see the fetch* functions), not just checked against
   // the finished body. Sized generously per endpoint's actual payload shape:
-  // bootstrap carries every player/team in the game, the rest are scoped to
-  // one entry/gameweek.
+  // bootstrap carries every player/team in the game, /fixtures/?event=N is
+  // one gameweek's fixture list (~30KB), the rest are scoped to one
+  // entry/gameweek.
   readonly property int maxBootstrapBytes: 8000000
   readonly property int maxHistoryBytes: 2000000
   readonly property int maxLiveElementsBytes: 3000000
   readonly property int maxPicksBytes: 500000
   readonly property int maxEntryBytes: 2000000
+  readonly property int maxFixturesBytes: 400000
   // fpl-tracker.json only ever holds a team ID, a bool, and a handful of
   // league IDs — a few hundred bytes in practice.
   readonly property int maxConfigFileBytes: 65536
@@ -54,10 +69,25 @@ BarWidget {
   property bool popupOpen: false
   function close() { popupOpen = false }
 
+  function openPopup() {
+    popupOpen = true
+    // Show fresh data immediately instead of whatever the last 90-second
+    // poll left behind.
+    root.refreshAll()
+  }
+
   readonly property int currentEventId: entryData ? entryData.current_event : 0
   readonly property var currentEventMeta: Model.findEvent(bootstrapEvents, currentEventId)
   readonly property var nextEventMeta: Model.findNextEvent(bootstrapEvents)
   readonly property string eventStatus: Model.eventStatus(currentEventMeta)
+
+  // The gameweek after the one in play — where the "Next up for your squad"
+  // fixture difficulty section looks. Null while the current gameweek is
+  // still upcoming (its own fixtures ARE the upcoming ones then).
+  readonly property int upcomingEventId: {
+    if (!root.currentEventId) return 0
+    return root.eventStatus === "upcoming" ? 0 : root.currentEventId + 1
+  }
 
   // `picksData.entry_history` (the picks endpoint) only updates on FPL's
   // periodic backend recalculation and visibly lags during live play — a
@@ -98,6 +128,53 @@ BarWidget {
   readonly property var squadRows: Model.squadRows(picksData, elementsById, teamsById, elementTypesById, liveElementsById)
   readonly property var startingRows: squadRows.filter(function(r) { return !r.onBench })
   readonly property var benchRows: squadRows.filter(function(r) { return r.onBench })
+
+  // Team IDs across all 15 picks — the lookup set behind "next up for your
+  // squad" in the Fixtures tab. Uses the current squad as a proxy for the
+  // next-deadline squad (transfers haven't happened yet at display time).
+  readonly property var squadTeamIds: {
+    var out = {}
+    for (var i = 0; i < squadRows.length; i++) {
+      if (squadRows[i].teamId) out[squadRows[i].teamId] = true
+    }
+    return out
+  }
+
+  // Parsed fixture view models. Parsing happens in derived properties (not
+  // in the fetch handlers) so rows re-resolve their team short names the
+  // moment bootstrap's teamsById arrives, without re-fetching fixtures.
+  readonly property var currentFixtures: Model.parseFixtures(rawCurrentFixtures, teamsById)
+  readonly property bool anyFixtureLive: Model.anyLiveFixtures(currentFixtures)
+  // Green "Live" treatment only while matches are ACTUALLY in play — the
+  // gameweek can sit "in progress" overnight between match days, and a
+  // finished evening of football must not keep the hero pulsing green.
+  readonly property bool matchLiveNow: root.eventStatus === "live" && root.anyFixtureLive
+  // The 15 picked element ids — lookup set behind the Overview goal feed.
+  readonly property var squadPlayerIds: {
+    var out = {}
+    for (var i = 0; i < squadRows.length; i++) out[squadRows[i].element] = true
+    return out
+  }
+  readonly property var squadGoalEvents: Model.squadGoalEvents(currentFixtures, squadPlayerIds, elementsById)
+  // Where FPL's half-season chip allowance resets (typically GW20).
+  readonly property int chipResetGw: Model.chipResetEvent(bootstrapChips)
+  readonly property var nextFixtures: Model.parseFixtures(rawNextFixtures, teamsById)
+  readonly property var nextSquadFixtures: Model.fixturesForTeams(nextFixtures, squadTeamIds)
+
+  // Ticker so the deadline-countdown text re-evaluates without waiting for
+  // a data refresh. Only ticks while the popup is open.
+  property int clockTick: 0
+
+  // Next-gameweek fixtures are opt-in — this week's games are the priority
+  // view; the following week's list is one click away.
+  property bool showNextGwFixtures: false
+
+  readonly property var tabModel: [
+    { id: "overview", label: "Overview" },
+    { id: "squad", label: "Squad" },
+    { id: "fixtures", label: "Fixtures" },
+    { id: "settings", label: "Settings" }
+  ]
 
   // ---- persistence ------------------------------------------------------
   // FileView has no size-limited or streaming read, and its own read path
@@ -186,6 +263,8 @@ BarWidget {
     root.picksData = null
     root.liveElementsById = {}
     root.historyCurrent = []
+    root.rawCurrentFixtures = []
+    root.rawNextFixtures = []
     root.errorMessage = ""
     root.teamId = digits
     root.persistConfig()
@@ -203,6 +282,13 @@ BarWidget {
   // no client-side scoring or auto-sub math needed. Per-player captain
   // contribution is live points × `multiplier`, which FPL itself already
   // resolves correctly (2x/3x captain, vice-captain fallback, bench).
+  //
+  // Fixtures come from the per-gameweek `/fixtures/?event=N` form (~30KB)
+  // rather than the megabyte-scale full-season list: the current gameweek's
+  // list is polled on the fast cycle because it doubles as the live-scores
+  // feed (scores/minutes update during play, and it carries the official
+  // FDR), while next gameweek's list is static until the rollover and
+  // rides the slow 10-minute cycle.
 
   function beginRequest() { root.pendingRequests++ }
   function endRequest() {
@@ -340,6 +426,58 @@ BarWidget {
     xhr.send()
   }
 
+  // Per-gameweek fixtures: live scores + official FDR for one event.
+  // `track` selects whether the fetch drives the popup's spinner — the
+  // current gameweek's list does (it's the live-scores feed), the next
+  // gameweek's background refresh does not.
+  function fetchFixtures(eventId, onReady, track) {
+    if (!eventId) return
+    if (track) root.beginRequest()
+    var xhr = new XMLHttpRequest()
+    var aborted = false
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState === XMLHttpRequest.HEADERS_RECEIVED) {
+        var declaredLength = parseInt(xhr.getResponseHeader("Content-Length"), 10)
+        if (declaredLength > root.maxFixturesBytes) { aborted = true; xhr.abort() }
+        return
+      }
+      if (xhr.readyState === XMLHttpRequest.LOADING) {
+        if (xhr.responseText.length > root.maxFixturesBytes) { aborted = true; xhr.abort() }
+        return
+      }
+      if (xhr.readyState !== XMLHttpRequest.DONE) return
+      if (track) root.endRequest()
+      if (aborted) return
+      if (xhr.status === 200) {
+        try {
+          if (xhr.responseText.length > root.maxFixturesBytes) throw "too large"
+          var data = JSON.parse(xhr.responseText)
+          if (Array.isArray(data)) onReady(data)
+        } catch (e) {
+          // Keep whatever fixtures we already had.
+        }
+      }
+    }
+    xhr.ontimeout = function() { if (track) root.endRequest() }
+    xhr.open("GET", Model.fixturesUrl(eventId))
+    xhr.timeout = 10000
+    xhr.send()
+  }
+
+  function fetchCurrentFixtures() {
+    if (!root.currentEventId) return
+    root.fetchFixtures(root.currentEventId, function(data) {
+      root.rawCurrentFixtures = data
+    }, true)
+  }
+
+  function fetchNextFixtures() {
+    if (!root.upcomingEventId) return
+    root.fetchFixtures(root.upcomingEventId, function(data) {
+      root.rawNextFixtures = data
+    }, false)
+  }
+
   function fetchEntry() {
     if (!Model.isValidTeamId(root.teamId)) return
     root.beginRequest()
@@ -367,6 +505,7 @@ BarWidget {
           if (data.current_event) {
             root.fetchPicks(data.current_event)
             root.fetchLiveElements(data.current_event)
+            root.fetchCurrentFixtures()
           }
         } catch (e) {
           root.errorMessage = "Couldn't read FPL data"
@@ -398,6 +537,8 @@ BarWidget {
     refreshAll()
   }
 
+  onUpcomingEventIdChanged: root.fetchNextFixtures()
+
   Timer {
     interval: root.refreshIntervalMs
     running: root.teamId !== ""
@@ -409,18 +550,69 @@ BarWidget {
     interval: 600000
     running: root.teamId !== ""
     repeat: true
-    onTriggered: { root.fetchBootstrap(); root.fetchHistory() }
+    onTriggered: { root.fetchBootstrap(); root.fetchHistory(); root.fetchNextFixtures() }
+  }
+
+  // While matches are in play and the popup is open, poll the fixtures
+  // feed on a faster cycle than the 90-second data poll — scores and
+  // minutes arrive on FPL's ~60s fixture updates.
+  Timer {
+    interval: 60000
+    running: root.popupOpen && root.currentEventId !== 0 && root.anyFixtureLive
+    repeat: true
+    onTriggered: root.fetchCurrentFixtures()
+  }
+
+  Timer {
+    interval: 30000
+    running: root.popupOpen && root.eventStatus === "upcoming"
+    repeat: true
+    onTriggered: root.clockTick++
+  }
+
+  // IPC so the popup can be toggled from a keybind, e.g.
+  //   bind = SUPER, F, exec, omarchy-shell fpl-tracker toggle
+  IpcHandler {
+    target: "fpl-tracker"
+
+    function toggle(): void {
+      root.popupOpen ? root.close() : root.openPopup()
+    }
+
+    function open(): void { root.openPopup() }
+    function close(): void { root.close() }
+
+    // Jump to a tab directly: overview | squad | fixtures | settings
+    function tab(name: string): void {
+      root.openPopup()
+      var n = String(name).toLowerCase()
+      for (var i = 0; i < root.tabModel.length; i++) {
+        if (root.tabModel[i].id === n) { root.currentTab = n; return }
+      }
+    }
   }
 
   // ---- bar pill -------------------------------------------------------
   // Icon-only by default (matches the rest of the bar's monotone glyphs);
-  // the live points number is opt-in via Settings.
+  // the live points number is opt-in via Settings. While the gameweek is
+  // in play the pill tints with the theme accent so a glance at the bar
+  // tells you football is happening.
+
+  readonly property bool pillError: root.errorMessage !== "" && !root.entryData
+  readonly property bool pillLive: root.eventStatus === "live" && root.entryData
+  readonly property bool pillUnconfigured: root.teamId === ""
+
+  // Full-brightness bar text whenever connected and healthy — muted only
+  // while no FPL ID is set, urgent red on connection/API errors.
+  readonly property color pillColor: pillError ? Color.urgent
+    : pillUnconfigured ? Color.muted
+    : root.bar.barForeground
 
   readonly property string pillText: {
     if (teamId === "") return "Set FPL ID"
     if (!showPointsInBar) return ""
     if (loading) return "…"
-    if (errorMessage !== "" && !entryData) return "Error"
+    if (pillError) return "!"
     if (livePoints !== null && livePoints !== undefined) return String(livePoints)
     return "–"
   }
@@ -436,7 +628,7 @@ BarWidget {
 
     Text {
       text: "" // fa-futbol-o — plain outline ball, monotone like the rest of the bar icons
-      color: root.errorMessage !== "" && !root.entryData ? Color.urgent : root.bar.barForeground
+      color: root.pillColor
       font.family: root.bar.fontFamily
       font.pixelSize: Style.font.body
     }
@@ -444,9 +636,10 @@ BarWidget {
     Text {
       visible: !root.vertical && root.pillText !== ""
       text: root.pillText
-      color: root.errorMessage !== "" && !root.entryData ? Color.urgent : root.bar.barForeground
+      color: root.pillColor
       font.family: root.bar.fontFamily
       font.pixelSize: Style.font.body
+      font.bold: root.pillLive
     }
   }
 
@@ -454,44 +647,140 @@ BarWidget {
     anchors.fill: parent
     hoverEnabled: true
     cursorShape: Qt.PointingHandCursor
-    onClicked: root.popupOpen = !root.popupOpen
+    onClicked: root.popupOpen ? root.close() : root.openPopup()
     onEntered: if (root.bar) root.bar.showTooltip(root, root.entryData
       ? Model.plainText(root.entryData.name) + " — GW" + root.currentEventId + (root.livePoints !== null ? ": " + root.livePoints + " pts" : "")
       : "Omarchy FPL Tracker")
     onExited: if (root.bar) root.bar.hideTooltip(root)
   }
 
-  // ---- popup ------------------------------------------------------------
+  // ---- shared delegates -------------------------------------------------
+
+  // Inline component: the official 1-5 fixture difficulty rating as a small
+  // colored pill. Colors are the domain-standard green→red FDR spectrum
+  // (see Model.FDR_COLORS), not theme tokens.
+  component FdrPill: Rectangle {
+    id: fdrRoot
+    required property int difficulty
+    width: Style.space(14)
+    height: Style.space(14)
+    radius: Style.space(4)
+    color: Model.fdrColor(difficulty)
+
+    Text {
+      anchors.centerIn: parent
+      text: fdrRoot.difficulty
+      textFormat: Text.PlainText
+      color: Model.fdrTextColor(fdrRoot.difficulty)
+      font.family: root.bar.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+  }
 
   Component {
-    id: chipBadgeDelegate
+    id: chipPillDelegate
 
-    Column {
+    Rectangle {
       required property var modelData
       readonly property bool activeNow: modelData.name === root.activeChip
-      width: Style.space(38) // fixed so the horizontalCenter below lines up across rows regardless of label length
-      spacing: Style.space(1)
+      readonly property bool used: modelData.status === "used"
+      readonly property bool known: modelData.status !== "unknown"
 
-      Text {
-        text: modelData.code
-        textFormat: Text.PlainText
-        anchors.horizontalCenter: parent.horizontalCenter
-        color: parent.activeNow ? Color.accent : (modelData.status === "available" ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.8))
-        font.family: root.bar.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        font.bold: parent.activeNow || modelData.status === "available"
+      width: chipPillContent.implicitWidth + Style.space(14)
+      height: chipPillContent.implicitHeight + Style.space(8)
+      radius: height / 2
+      color: activeNow ? root.successGreen
+        : (known && !used ? Util.alpha(root.bar.foreground, 0.08)
+        : "transparent")
+      border.width: activeNow || used ? 0 : 1
+      border.color: known ? Util.alpha(root.bar.foreground, 0.15) : "transparent"
+
+      Row {
+        id: chipPillContent
+        anchors.centerIn: parent
+        spacing: Style.space(4)
+
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          text: modelData.code
+          textFormat: Text.PlainText
+          color: activeNow ? "#1a1a1a"
+            : (used ? Color.muted : root.bar.foreground)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: activeNow || !used
+        }
+
+        Text {
+          visible: activeNow || used
+          anchors.verticalCenter: parent.verticalCenter
+          text: activeNow ? "Active" : "GW" + modelData.usedEvent
+          textFormat: Text.PlainText
+          color: activeNow ? "#1a1a1a" : Color.muted
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+        }
       }
+    }
+  }
 
-      Text {
-        text: parent.activeNow ? "Active"
-          : modelData.status === "used" ? "GW" + modelData.usedEvent
-          : modelData.status === "available" ? "Ready"
-          : ""
-        textFormat: Text.PlainText
-        anchors.horizontalCenter: parent.horizontalCenter
-        color: parent.activeNow ? Color.accent : Qt.darker(root.bar.foreground, 1.6)
-        font.family: root.bar.fontFamily
-        font.pixelSize: Style.font.caption
+  Component {
+    id: statTileDelegate
+
+    Rectangle {
+      id: tile
+      required property var modelData
+      width: (parent.width - parent.columnSpacing) / 2
+      height: tileContent.implicitHeight + Style.space(16)
+      // Theme rounding when the theme has any; a gentle fallback keeps the
+      // tiles from looking square on square-cornered themes.
+      radius: Math.max(Style.cornerRadius, Style.space(6))
+      color: Util.alpha(root.bar.foreground, 0.06)
+
+      Column {
+        id: tileContent
+        // Explicit width (not implicit) so the centered children below have
+        // a real surface to center within — an implicit-width Column plus
+        // width-bound children is a circular binding that collapses to zero.
+        width: tile.width - Style.space(16)
+        anchors.centerIn: parent
+        spacing: Style.space(2)
+
+        Text {
+          width: parent.width
+          horizontalAlignment: Text.AlignHCenter
+          text: tile.modelData.label
+          textFormat: Text.PlainText
+          color: Color.muted
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        Text {
+          width: parent.width
+          horizontalAlignment: Text.AlignHCenter
+          text: tile.modelData.value
+          textFormat: Text.PlainText
+          color: root.bar.foreground
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.body
+          font.bold: true
+        }
+
+        Text {
+          width: parent.width
+          horizontalAlignment: Text.AlignHCenter
+          // Every tile renders a detail line — empty ones fall back to a
+          // space so all four tiles keep identical heights and the grid
+          // stays symmetric.
+          text: tile.modelData.detail || " "
+          textFormat: Text.PlainText
+          color: tile.modelData.detailColor !== undefined ? tile.modelData.detailColor : Color.muted
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+        }
       }
     }
   }
@@ -500,63 +789,304 @@ BarWidget {
     id: squadRowDelegate
 
     Item {
+      id: squadRowRoot
       required property var modelData
       width: parent.width
-      implicitHeight: Math.max(tagText.implicitHeight, nameText.implicitHeight, pointsRow.implicitHeight)
+      implicitHeight: Math.max(squadNameText.implicitHeight, squadPointsPill.implicitHeight)
       opacity: modelData.multiplier > 0 ? 1.0 : 0.45
 
       Text {
-        id: tagText
+        id: squadTagText
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
         width: Style.space(30)
         text: modelData.typeShort
-        color: Qt.darker(root.bar.foreground, 1.5)
+        color: Color.muted
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption
       }
 
       Row {
-        id: pointsRow
+        id: squadPointsArea
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        spacing: Style.space(4)
+        spacing: Style.space(5)
 
         Text {
-          visible: modelData.multiplier > 1
-          text: "×" + modelData.multiplier
-          color: Color.accent
+          visible: squadRowRoot.modelData.priceDelta !== 0
+          anchors.verticalCenter: parent.verticalCenter
+          text: Model.formatPriceDelta(squadRowRoot.modelData.priceDelta)
+          textFormat: Text.PlainText
+          color: squadRowRoot.modelData.priceDelta > 0 ? root.successGreen : Color.urgent
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        Text {
+          visible: squadRowRoot.modelData.multiplier > 1
+          anchors.verticalCenter: parent.verticalCenter
+          text: "×" + squadRowRoot.modelData.multiplier
+          color: root.captainGold
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
           font.bold: true
         }
 
-        Text {
-          text: modelData.contribution !== null && modelData.contribution !== undefined ? String(modelData.contribution) : "–"
-          color: root.bar.foreground
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          font.bold: true
+        Rectangle {
+          id: squadPointsPill
+          anchors.verticalCenter: parent.verticalCenter
+          width: squadPointsText.implicitWidth + Style.space(12)
+          height: squadPointsText.implicitHeight + Style.space(4)
+          radius: height / 2
+          color: squadRowRoot.modelData.contribution > 0
+            ? (squadRowRoot.modelData.isCaptain ? root.captainGold : Util.alpha(root.bar.foreground, 0.1))
+            : Util.alpha(root.bar.foreground, 0.05)
+
+          Text {
+            id: squadPointsText
+            anchors.centerIn: parent
+            text: squadRowRoot.modelData.contribution !== null && squadRowRoot.modelData.contribution !== undefined ? String(squadRowRoot.modelData.contribution) : "–"
+            textFormat: Text.PlainText
+            color: squadRowRoot.modelData.isCaptain && squadRowRoot.modelData.contribution > 0 ? "#1a1a1a" : root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            font.bold: true
+          }
         }
       }
 
-      Text {
-        id: nameText
-        anchors.left: tagText.right
-        anchors.right: pointsRow.left
+      Row {
+        id: squadNameArea
+        anchors.left: squadTagText.right
+        anchors.right: squadPointsArea.left
         anchors.leftMargin: Style.space(4)
         anchors.rightMargin: Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
-        text: modelData.name + (modelData.isCaptain ? "  (C)" : modelData.isViceCaptain ? "  (V)" : "")
-        textFormat: Text.PlainText // player name is FPL-sourced; never interpret it as rich text
-        color: modelData.isCaptain ? Color.accent : root.bar.foreground
-        font.family: root.bar.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        font.bold: modelData.isCaptain
-        elide: Text.ElideRight
+        spacing: Style.space(4)
+
+        Text {
+          id: squadNameText
+          anchors.verticalCenter: parent.verticalCenter
+          text: squadRowRoot.modelData.name
+          textFormat: Text.PlainText // player name is FPL-sourced; never interpret it as rich text
+          color: squadRowRoot.modelData.isCaptain ? root.captainGold : root.bar.foreground
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: squadRowRoot.modelData.isCaptain
+          elide: Text.ElideRight
+          width: Math.min(implicitWidth, squadNameArea.width - captainBadge.implicitWidth - squadNameArea.spacing)
+          visible: squadNameArea.width > 0
+        }
+
+        Rectangle {
+          id: captainBadge
+          visible: squadRowRoot.modelData.isCaptain || squadRowRoot.modelData.isViceCaptain
+          anchors.verticalCenter: parent.verticalCenter
+          width: captainBadgeText.implicitWidth + Style.space(8)
+          height: captainBadgeText.implicitHeight + Style.space(2)
+          radius: height / 2
+          color: squadRowRoot.modelData.isCaptain ? root.captainGold : Util.alpha(root.bar.foreground, 0.1)
+
+          Text {
+            id: captainBadgeText
+            anchors.centerIn: parent
+            text: squadRowRoot.modelData.isCaptain ? "C" : "V"
+            textFormat: Text.PlainText
+            color: squadRowRoot.modelData.isCaptain ? "#1a1a1a" : root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+        }
       }
     }
   }
+
+  Component {
+    id: fixtureRowDelegate
+
+    Item {
+      id: fixtureRow
+      required property var modelData
+      width: parent.width
+      implicitHeight: summaryRow.height
+        + (expanded ? matchReview.implicitHeight + Style.space(10) : 0)
+
+      readonly property bool live: Model.fixtureIsLive(modelData)
+      // `!!` — object lookups on squadTeamIds yield undefined for teams the
+      // manager doesn't own, and QML bool bindings reject undefined.
+      readonly property bool inSquad: !!(root.squadTeamIds[modelData.teamH] || root.squadTeamIds[modelData.teamA])
+      readonly property var goalLines: Model.fixtureGoalLines(modelData, root.elementsById)
+      property bool expanded: false
+      readonly property bool clickable: goalLines.length > 0
+      readonly property bool hovered: fixtureMouse.containsMouse
+
+      // Hover/click affordance: a faint surface on hover and while expanded.
+      Rectangle {
+        anchors.fill: parent
+        radius: Style.space(6)
+        color: fixtureRow.clickable && (fixtureRow.hovered || fixtureRow.expanded)
+          ? Util.alpha(root.bar.foreground, 0.05)
+          : "transparent"
+      }
+
+      // ---- summary line: fixed-width columns so every row — played or
+      // upcoming, long name or short — shares identical geometry and the
+      // FDR bars line up down the tab ----
+      Item {
+        id: summaryRow
+        width: parent.width
+        height: summaryGrid.implicitHeight + Style.space(6)
+
+        Row {
+          id: summaryGrid
+          anchors.centerIn: parent
+          spacing: Style.space(10)
+
+          // home: name + slim FDR bar underneath (the 1-5 pill colors,
+          // muted into a strip so ten rows don't shout)
+          Column {
+            width: Style.space(52)
+            spacing: Style.space(2)
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignRight
+              text: Model.plainText(fixtureRow.modelData.shortH)
+              textFormat: Text.PlainText
+              color: fixtureRow.inSquad ? root.bar.foreground : Color.muted
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              font.bold: fixtureRow.inSquad
+            }
+
+            Rectangle {
+              width: Style.space(30)
+              height: 3
+              radius: 1
+              anchors.horizontalCenter: parent.horizontalCenter
+              color: Model.fdrColor(fixtureRow.modelData.difficultyH)
+            }
+          }
+
+          // center: live dot + score / kickoff + minute — fixed-width slot
+          // so the name columns never shift between rows
+          Item {
+            width: Style.space(96)
+            height: scoreText.implicitHeight
+
+            Row {
+              anchors.centerIn: parent
+              spacing: Style.space(5)
+
+              Rectangle {
+                visible: fixtureRow.live
+                anchors.verticalCenter: parent.verticalCenter
+                width: Style.space(5)
+                height: Style.space(5)
+                radius: width / 2
+                color: root.successGreen
+
+                SequentialAnimation on opacity {
+                  running: fixtureRow.live
+                  loops: Animation.Infinite
+                  NumberAnimation { to: 0.25; duration: 900 }
+                  NumberAnimation { to: 1.0; duration: 900 }
+                }
+              }
+
+              Text {
+                id: scoreText
+                anchors.verticalCenter: parent.verticalCenter
+                text: Model.fixtureScoreText(fixtureRow.modelData)
+                textFormat: Text.PlainText
+                color: fixtureRow.modelData.started ? root.bar.foreground : Color.muted
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: fixtureRow.modelData.started
+              }
+
+              Text {
+                visible: fixtureRow.live
+                anchors.verticalCenter: parent.verticalCenter
+                text: Model.fixtureMinuteText(fixtureRow.modelData)
+                textFormat: Text.PlainText
+                color: root.successGreen
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+            }
+          }
+
+          // away: mirror of home
+          Column {
+            width: Style.space(52)
+            spacing: Style.space(2)
+
+            Text {
+              width: parent.width
+              text: Model.plainText(fixtureRow.modelData.shortA)
+              textFormat: Text.PlainText
+              color: fixtureRow.inSquad ? root.bar.foreground : Color.muted
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              font.bold: fixtureRow.inSquad
+            }
+
+            Rectangle {
+              width: Style.space(30)
+              height: 3
+              radius: 1
+              anchors.horizontalCenter: parent.horizontalCenter
+              color: Model.fdrColor(fixtureRow.modelData.difficultyA)
+            }
+          }
+        }
+      }
+
+      // ---- match review: scorers with assisters in parentheses ----
+      Column {
+        id: matchReview
+        anchors.top: summaryRow.bottom
+        anchors.topMargin: Style.space(4)
+        anchors.left: parent.left
+        anchors.leftMargin: Style.space(56)
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(4)
+        spacing: Style.space(2)
+        visible: fixtureRow.expanded
+
+        Repeater {
+          model: fixtureRow.goalLines
+
+          delegate: Text {
+            required property var modelData
+            width: matchReview.width
+            text: (modelData.team !== "" ? Model.plainText(modelData.team) + "  " : "") + Model.plainText(modelData.text)
+            textFormat: Text.PlainText // player names are FPL-sourced; never interpret as rich text
+            color: modelData.team !== "" ? root.bar.foreground : Color.muted
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            // Wrap, never elide — a 5-goal thriller's full scorer list must
+            // be readable, not truncated.
+            wrapMode: Text.WordWrap
+          }
+        }
+      }
+
+      MouseArea {
+        id: fixtureMouse
+        anchors.fill: parent
+        hoverEnabled: true
+        enabled: fixtureRow.clickable
+        cursorShape: fixtureRow.clickable ? Qt.PointingHandCursor : Qt.ArrowCursor
+        onClicked: fixtureRow.expanded = !fixtureRow.expanded
+      }
+    }
+  }
+
+  // ---- popup ------------------------------------------------------------
 
   KeyboardPanel {
     id: popup
@@ -564,12 +1094,12 @@ BarWidget {
     bar: root.bar
     owner: root
     open: root.popupOpen
-    contentWidth: popup.fittedContentWidth(Style.space(360))
+    contentWidth: popup.fittedContentWidth(Style.space(400))
     contentHeight: popup.fittedContentHeight(column.implicitHeight)
 
     Column {
       id: column
-      anchors.fill: parent
+      width: parent.width
       spacing: Style.space(10)
 
       // ---- unconfigured / edit form ----
@@ -588,7 +1118,7 @@ BarWidget {
 
         Text {
           text: "Find it in the URL when viewing your team on fantasy.premierleague.com — e.g. .../entry/1234567/event/1"
-          color: Qt.darker(root.bar.foreground, 1.5)
+          color: Color.muted
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
           wrapMode: Text.WordWrap
@@ -633,34 +1163,29 @@ BarWidget {
         }
       }
 
-      // ---- team overview ----
+      // ---- configured view ----
       Column {
         width: parent.width
         spacing: Style.space(10)
         visible: root.teamId !== "" && !root.editingId
 
-        Row {
+        // ---- header: team identity + actions ----
+          Row {
           width: parent.width
           spacing: Style.space(8)
 
-          Item {
-            width: parent.width - Style.space(74)
-            implicitHeight: nameColumn.implicitHeight
+          Text {
+            id: headerIcon
+            anchors.verticalCenter: parent.verticalCenter
+            text: "" // nf-fa-futbol-o — same glyph as the bar pill, sized up to anchor the header
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Math.round(Style.font.title * 1.5)
+          }
 
-            // Stylised watermark: the FPL wordmark, recolored to the theme's
-            // foreground and faded almost to nothing, bleeding off the right
-            // edge behind the team name — decoration only, never load-bearing.
-            Image {
-              anchors.verticalCenter: parent.verticalCenter
-              anchors.right: parent.right
-              anchors.rightMargin: -Style.space(8)
-              source: Model.headlineSvgDataUri(root.bar.foreground)
-              fillMode: Image.PreserveAspectFit
-              smooth: true
-              opacity: 0.09
-              height: Style.space(44)
-              width: height * Model.FPL_HEADLINE_ASPECT
-            }
+          Item {
+            width: parent.width - parent.spacing * 3 - headerIcon.implicitWidth - editButton.implicitWidth - siteButton.implicitWidth
+            implicitHeight: nameColumn.implicitHeight
 
             Column {
               id: nameColumn
@@ -682,7 +1207,7 @@ BarWidget {
                 visible: root.entryData !== null
                 text: root.entryData ? (root.entryData.player_first_name + " " + root.entryData.player_last_name) : ""
                 textFormat: Text.PlainText // manager name is FPL-sourced; never interpret it as rich text
-                color: Qt.darker(root.bar.foreground, 1.4)
+                color: Color.muted
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
                 elide: Text.ElideRight
@@ -692,6 +1217,8 @@ BarWidget {
           }
 
           Button {
+            id: editButton
+            anchors.verticalCenter: parent.verticalCenter
             text: "Edit"
             bordered: true
             foreground: root.bar.foreground
@@ -699,55 +1226,10 @@ BarWidget {
             verticalPadding: Style.spacing.controlPaddingY
             onClicked: { idField.text = root.teamId; root.editingId = true }
           }
-        }
-
-        // ---- tabs ----
-        Row {
-          width: parent.width
-          spacing: Style.space(6)
-
-          // Button's own `selected` fill reads a theme-controlled token that
-          // defaults to `foreground`, not the `accent` we pass, so it doesn't
-          // reliably tint with the theme's accent color either. A manual
-          // underline in Color.accent gets the theme-matching tab indicator
-          // we actually want, without depending on that token.
-          Column {
-            spacing: Style.space(3)
-            Button {
-              text: "Overview"
-              selected: root.currentTab === "overview"
-              foreground: root.bar.foreground
-              horizontalPadding: Style.spacing.controlPaddingX
-              verticalPadding: Style.spacing.controlPaddingY
-              onClicked: root.currentTab = "overview"
-            }
-            Rectangle {
-              width: parent.width
-              height: Style.space(2)
-              radius: 1
-              color: root.currentTab === "overview" ? Color.accent : "transparent"
-            }
-          }
-
-          Column {
-            spacing: Style.space(3)
-            Button {
-              text: "Squad"
-              selected: root.currentTab === "squad"
-              foreground: root.bar.foreground
-              horizontalPadding: Style.spacing.controlPaddingX
-              verticalPadding: Style.spacing.controlPaddingY
-              onClicked: root.currentTab = "squad"
-            }
-            Rectangle {
-              width: parent.width
-              height: Style.space(2)
-              radius: 1
-              color: root.currentTab === "squad" ? Color.accent : "transparent"
-            }
-          }
 
           Button {
+            id: siteButton
+            anchors.verticalCenter: parent.verticalCenter
             text: "Site"
             tooltipText: "Open fantasy.premierleague.com"
             foreground: root.bar.foreground
@@ -755,22 +1237,51 @@ BarWidget {
             verticalPadding: Style.spacing.controlPaddingY
             onClicked: Qt.openUrlExternally("https://fantasy.premierleague.com/my-team")
           }
+        }
 
-          Column {
-            spacing: Style.space(3)
-            Button {
-              text: "Settings"
-              selected: root.currentTab === "settings"
-              foreground: root.bar.foreground
-              horizontalPadding: Style.spacing.controlPaddingX
-              verticalPadding: Style.spacing.controlPaddingY
-              onClicked: root.currentTab = "settings"
-            }
-            Rectangle {
-              width: parent.width
-              height: Style.space(2)
-              radius: 1
-              color: root.currentTab === "settings" ? Color.accent : "transparent"
+        // ---- tabs ----
+        Row {
+          id: tabRow
+          width: parent.width
+          spacing: 0
+
+          Repeater {
+            model: root.tabModel
+
+            delegate: Item {
+              id: tabItem
+              required property var modelData
+              width: tabRow.width / root.tabModel.length
+              height: tabLabel.implicitHeight + Style.space(8)
+
+              readonly property bool isCurrent: root.currentTab === modelData.id
+
+              Text {
+                id: tabLabel
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.top: parent.top
+                text: tabItem.modelData.label
+                textFormat: Text.PlainText
+                color: tabItem.isCurrent ? root.bar.foreground : Color.muted
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: tabItem.isCurrent
+              }
+
+              Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: parent.bottom
+                width: tabLabel.implicitWidth + Style.space(12)
+                height: 2
+                radius: 1
+                color: tabItem.isCurrent ? Color.accent : "transparent"
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.currentTab = tabItem.modelData.id
+              }
             }
           }
         }
@@ -783,64 +1294,73 @@ BarWidget {
           spacing: Style.space(10)
           visible: root.currentTab === "overview"
 
-          Row {
+          // -- hero card: the gameweek at a glance --
+          Rectangle {
             width: parent.width
-            spacing: Style.space(6)
-
-            Rectangle {
-              width: Style.space(7)
-              height: Style.space(7)
-              y: (parent.height - height) / 2
-              radius: width / 2
-              color: root.eventStatus === "live" ? Color.accent : Qt.darker(root.bar.foreground, 1.8)
-            }
-
-            Text {
-              text: root.currentEventMeta ? root.currentEventMeta.name : (root.currentEventId ? "Gameweek " + root.currentEventId : "Gameweek")
-              textFormat: Text.PlainText // FPL-sourced; never interpret it as rich text
-              color: root.bar.foreground
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              font.bold: true
-            }
-
-            Text {
-              text: Model.eventStatusLabel(root.eventStatus)
-              color: Qt.darker(root.bar.foreground, 1.4)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-
-            Text {
-              visible: root.activeChip !== ""
-              text: "· " + Model.chipLabel(root.activeChip)
-              color: Color.accent
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-            }
-          }
-
-          Text {
-            visible: root.eventStatus === "upcoming" && root.nextEventMeta
-            text: "Next deadline: " + (root.nextEventMeta ? Model.formatDeadline(root.nextEventMeta.deadline_time) : "")
-            color: Qt.darker(root.bar.foreground, 1.4)
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          Item {
-            width: parent.width
-            implicitHeight: Math.max(pointsColumn.implicitHeight, chipGrid.implicitHeight)
+            height: heroContent.implicitHeight + Style.space(24)
+            radius: Math.max(Style.cornerRadius, Style.space(8))
+            color: Util.alpha(root.bar.foreground, 0.05)
 
             Column {
-              id: pointsColumn
-              anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(2)
-              visible: root.eventStatus !== "upcoming"
+              id: heroContent
+              anchors.fill: parent
+              anchors.margins: Style.space(12)
+              spacing: Style.space(6)
+
+              Row {
+                width: parent.width
+                spacing: Style.space(6)
+
+                Rectangle {
+                  id: liveDot
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(7)
+                  height: Style.space(7)
+                  radius: width / 2
+                  color: root.matchLiveNow ? root.successGreen : Color.muted
+
+                  SequentialAnimation on opacity {
+                    running: root.matchLiveNow
+                    loops: Animation.Infinite
+                    NumberAnimation { to: 0.25; duration: 900 }
+                    NumberAnimation { to: 1.0; duration: 900 }
+                  }
+                }
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: root.currentEventMeta ? root.currentEventMeta.name : (root.currentEventId ? "Gameweek " + root.currentEventId : "Gameweek")
+                  textFormat: Text.PlainText // FPL-sourced; never interpret it as rich text
+                  color: root.bar.foreground
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  font.bold: true
+                }
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: Model.eventStatusLabel(root.eventStatus)
+                  textFormat: Text.PlainText
+                  color: root.matchLiveNow ? root.successGreen : Color.muted
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: root.matchLiveNow
+                }
+
+                Text {
+                  visible: root.activeChip !== ""
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "· " + Model.chipLabel(root.activeChip)
+                  textFormat: Text.PlainText
+                  color: Color.accent
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+              }
 
               Text {
+                visible: root.eventStatus !== "upcoming"
                 text: root.livePoints !== null && root.livePoints !== undefined ? String(root.livePoints) : "–"
                 color: root.bar.foreground
                 font.family: root.bar.fontFamily
@@ -849,100 +1369,206 @@ BarWidget {
               }
 
               Text {
-                text: "Gameweek points"
-                color: Qt.darker(root.bar.foreground, 1.4)
+                visible: root.eventStatus === "upcoming" && root.nextEventMeta
+                text: {
+                  root.clockTick
+                  return Model.formatTimeUntil(root.nextEventMeta ? root.nextEventMeta.deadline_time : "") || "–"
+                }
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.displayLarge
+                font.bold: true
+              }
+
+              Text {
+                text: root.eventStatus === "upcoming"
+                  ? "until the GW" + root.currentEventId + " deadline" + (root.nextEventMeta ? " · " + Model.formatDeadline(root.nextEventMeta.deadline_time) : "")
+                  : "Gameweek points"
+                color: Color.muted
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
               }
 
               Text {
-                visible: root.activeChip === "bboost" || (root.benchPoints || 0) > 0 || (root.transferCost || 0) > 0
+                visible: root.eventStatus !== "upcoming"
+                  && (root.activeChip === "bboost" || (root.benchPoints || 0) > 0 || (root.transferCost || 0) > 0)
                 text: [
                   root.activeChip === "bboost" ? "Bench Boost: bench counts"
                     : ((root.benchPoints || 0) > 0 ? root.benchPoints + " on bench" : ""),
                   (root.transferCost || 0) > 0 ? "-" + root.transferCost + " transfer cost" : ""
                 ].filter(function(v) { return v !== "" }).join("  ·  ")
-                color: Qt.darker(root.bar.foreground, 1.4)
+                color: Color.muted
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
               }
-            }
 
-            // Chip tracker: which of the season's two Wildcard/Free Hit/Bench
-            // Boost/Triple Captain windows is current, and whether it's been
-            // used yet. Re-derives from the current gameweek every refresh,
-            // so it naturally flips over at the gameweek ~19/20 chip reset
-            // without any special-cased "is it GW20 yet" logic.
-            Grid {
-              id: chipGrid
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              columns: 2
-              rowSpacing: Style.space(4)
-              columnSpacing: Style.space(10)
+              // Your players' goal involvements this gameweek, straight from
+              // the fixture feed — "Haaland scored!" without opening a tab.
+              Column {
+                width: parent.width
+                spacing: Style.space(2)
+                visible: root.squadGoalEvents.length > 0 && root.eventStatus !== "upcoming"
 
-              Repeater {
-                model: root.chipStatuses
-                delegate: chipBadgeDelegate
+                Repeater {
+                  model: root.squadGoalEvents.slice(0, 4)
+
+                  delegate: Text {
+                    required property var modelData
+                    width: parent.width
+                    text: {
+                      var main = modelData.goals > 0 ? (modelData.goals > 1 ? " ×" + modelData.goals : "") : ""
+                      if (modelData.assists > 0) main += (main !== "" ? " · " : "") + modelData.assists + "A"
+                      return "<font color=\"#4ade80\">\uF1E3</font> <b>" + Model.plainText(modelData.name) + "</b>" + main
+                        + "  ·  " + Model.plainText(modelData.fixture)
+                    }
+                    textFormat: Text.StyledText // we own the markup; names are stripped of <> first
+                    color: root.bar.foreground
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    elide: Text.ElideRight
+                  }
+                }
+
+                Text {
+                  visible: root.squadGoalEvents.length > 4
+                  text: "+" + (root.squadGoalEvents.length - 4) + " more — see Fixtures"
+                  textFormat: Text.PlainText
+                  color: Color.muted
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
               }
             }
           }
 
-          PanelSeparator { foreground: root.bar.foreground }
+          // -- chip tracker --
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
 
+            Repeater {
+              model: root.chipStatuses
+              delegate: chipPillDelegate
+            }
+          }
+
+          // Season strip: one tick per gameweek, hoverable. Played weeks
+          // are faint, chip-played weeks gold (hover for which chip), the
+          // half-season token reset is purple, and this week glows green
+          // while matches are in play.
+          Item {
+            id: seasonStripArea
+            width: parent.width
+            height: stripCaption.implicitHeight + seasonStrip.height + Style.space(4)
+            visible: root.bootstrapEvents.length > 0 && root.currentEventId > 0
+
+            property int hoverEventId: 0
+
+            // Hover readout / idle legend. Reserves its line so the strip
+            // never jumps when hover text appears.
+            Text {
+              id: stripCaption
+              anchors.top: parent.top
+              anchors.horizontalCenter: parent.horizontalCenter
+              height: Math.max(implicitHeight, Style.font.caption)
+              text: {
+                var id = seasonStripArea.hoverEventId
+                if (id === 0) return "Season so far · gold = chip played · purple = tokens reset"
+                for (var i = 0; i < root.historyChips.length; i++) {
+                  var h = root.historyChips[i]
+                  if (h && h.event === id) return "GW" + id + " · " + Model.chipLabel(h.name) + " used"
+                }
+                if (id === root.currentEventId) return "GW" + id + " · current gameweek"
+                if (id === root.chipResetGw) return "GW" + id + " · FPL tokens reset"
+                if (id < root.currentEventId) return "GW" + id + " · finished"
+                return "GW" + id
+              }
+              textFormat: Text.PlainText
+              color: seasonStripArea.hoverEventId === 0 ? Color.muted : root.bar.foreground
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Row {
+              id: seasonStrip
+              anchors.horizontalCenter: parent.horizontalCenter
+              anchors.bottom: parent.bottom
+              spacing: Style.space(3)
+
+              Repeater {
+                model: root.bootstrapEvents
+
+                delegate: Rectangle {
+                  id: seasonTick
+                  required property var modelData
+                  width: Style.space(6)
+                  height: isCurrent ? Style.space(9) : (chipPlayed ? Style.space(8) : Style.space(6))
+                  radius: 1
+
+                  readonly property bool isCurrent: root.currentEventId === modelData.id
+                  readonly property bool chipPlayed: {
+                    for (var i = 0; i < root.historyChips.length; i++) {
+                      if (root.historyChips[i] && root.historyChips[i].event === modelData.id) return true
+                    }
+                    return false
+                  }
+                  readonly property bool isReset: root.chipResetGw === modelData.id && !isCurrent
+
+                  color: isCurrent ? (root.matchLiveNow ? root.successGreen : Util.alpha(root.bar.foreground, 0.45))
+                    : chipPlayed ? root.captainGold
+                    : isReset ? "#a78bfa"
+                    : modelData.id < root.currentEventId ? Util.alpha(root.bar.foreground, 0.18)
+                    : Util.alpha(root.bar.foreground, 0.08)
+
+                  MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onEntered: seasonStripArea.hoverEventId = seasonTick.modelData.id
+                    onExited: seasonStripArea.hoverEventId = 0
+                  }
+                }
+              }
+            }
+          }
+
+          // -- stat tiles --
           Grid {
             width: parent.width
             columns: 2
+            columnSpacing: Style.space(8)
             rowSpacing: Style.space(8)
-            columnSpacing: Style.space(12)
 
-            Column {
-              width: (parent.width - Style.space(12)) / 2
-              spacing: Style.space(1)
-              visible: root.showOverallStats
-              Text { text: "OVERALL RANK"; color: Qt.darker(root.bar.foreground, 1.5); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-              Text { text: Model.formatRank(root.overallRank); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.body }
-              Text {
-                visible: root.rankDelta !== null
-                text: (root.rankDelta > 0 ? "▲ " : root.rankDelta < 0 ? "▼ " : "") + Model.formatSignedNumber(root.rankDelta) + " (" + Model.formatSignedPercent(root.rankPercent) + ")"
-                color: root.rankDelta > 0 ? Color.accent : (root.rankDelta < 0 ? Color.urgent : Qt.darker(root.bar.foreground, 1.4))
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.caption
-              }
-              Text {
-                visible: root.rankDelta === null
-                text: "vs last GW: –"
-                color: Qt.darker(root.bar.foreground, 1.6)
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.caption
-              }
-            }
-
-            Column {
-              width: (parent.width - Style.space(12)) / 2
-              spacing: Style.space(1)
-              visible: root.showOverallStats
-              Text { text: "OVERALL POINTS"; color: Qt.darker(root.bar.foreground, 1.5); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-              Text { text: Model.formatNumber(root.overallPoints); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.body }
-            }
-
-            Column {
-              width: (parent.width - Style.space(12)) / 2
-              spacing: Style.space(1)
-              Text { text: "GW RANK"; color: Qt.darker(root.bar.foreground, 1.5); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-              Text { text: Model.formatRank(root.gwRank); color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.body }
-            }
-
-            Column {
-              width: (parent.width - Style.space(12)) / 2
-              spacing: Style.space(1)
-              Text { text: "SQUAD / BANK"; color: Qt.darker(root.bar.foreground, 1.5); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-              Text {
-                text: (root.teamValue !== null ? Model.formatMoney(root.teamValue) : "–") + " / " + (root.bank !== null ? Model.formatMoney(root.bank) : "–")
-                color: root.bar.foreground
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.body
-              }
+            Repeater {
+              model: [
+                {
+                  label: "GW RANK",
+                  value: Model.formatRank(root.gwRank),
+                  detail: "",
+                  detailColor: Color.muted
+                },
+                {
+                  label: "OVERALL RANK",
+                  value: Model.formatRank(root.overallRank),
+                  detail: root.rankDelta !== null
+                    ? (root.rankDelta > 0 ? "▲ " : root.rankDelta < 0 ? "▼ " : "") + Model.formatSignedNumber(root.rankDelta) + " (" + Model.formatSignedPercent(root.rankPercent) + ")"
+                    : "vs last GW: –",
+                  detailColor: root.rankDelta > 0 ? root.successGreen : (root.rankDelta < 0 ? Color.urgent : Color.muted)
+                },
+                {
+                  label: "OVERALL POINTS",
+                  value: Model.formatNumber(root.overallPoints),
+                  detail: "",
+                  detailColor: Color.muted
+                },
+                {
+                  label: "SQUAD / BANK",
+                  value: (root.teamValue !== null ? Model.formatMoney(root.teamValue) : "–") + " / " + (root.bank !== null ? Model.formatMoney(root.bank) : "–"),
+                  detail: "",
+                  detailColor: Color.muted
+                }
+              ]
+              delegate: statTileDelegate
             }
           }
 
@@ -950,8 +1576,6 @@ BarWidget {
             width: parent.width
             spacing: Style.space(6)
             visible: root.visibleLeagues.length > 0
-
-            PanelSeparator { foreground: root.bar.foreground }
 
             PanelSectionHeader {
               text: "LEAGUES"
@@ -992,7 +1616,7 @@ BarWidget {
                     Text {
                       visible: modelData.delta !== 0
                       text: modelData.delta > 0 ? "▲" : "▼"
-                      color: modelData.delta > 0 ? Color.accent : Color.urgent
+                      color: modelData.delta > 0 ? root.successGreen : Color.urgent
                       font.family: root.bar.fontFamily
                       font.pixelSize: Style.font.caption
                     }
@@ -1011,7 +1635,8 @@ BarWidget {
             Text {
               visible: root.visibleLeagues.length > 8
               text: "+" + (root.visibleLeagues.length - 8) + " more leagues"
-              color: Qt.darker(root.bar.foreground, 1.5)
+              textFormat: Text.PlainText
+              color: Color.muted
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.caption
             }
@@ -1027,6 +1652,7 @@ BarWidget {
           Text {
             visible: root.activeChip !== ""
             text: "Chip active: " + Model.chipLabel(root.activeChip)
+            textFormat: Text.PlainText
             color: Color.accent
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -1036,7 +1662,7 @@ BarWidget {
           Text {
             visible: root.squadRows.length === 0
             text: root.picksData ? "No picks for this gameweek" : "Loading squad…"
-            color: Qt.darker(root.bar.foreground, 1.4)
+            color: Color.muted
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
           }
@@ -1046,11 +1672,30 @@ BarWidget {
             spacing: Style.space(4)
             visible: root.startingRows.length > 0
 
-            PanelSectionHeader { text: "STARTING XI"; foreground: root.bar.foreground }
+            Rectangle {
+              width: parent.width
+              height: startingList.implicitHeight + panelStartingHeader.implicitHeight + Style.space(20)
+              radius: Math.max(Style.cornerRadius, Style.space(8))
+              color: Util.alpha(root.bar.foreground, 0.05)
 
-            Repeater {
-              model: root.startingRows
-              delegate: squadRowDelegate
+              Column {
+                anchors.fill: parent
+                anchors.margins: Style.space(10)
+                spacing: Style.space(6)
+
+                PanelSectionHeader { id: panelStartingHeader; text: "STARTING XI"; foreground: root.bar.foreground }
+
+                Column {
+                  id: startingList
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  Repeater {
+                    model: root.startingRows
+                    delegate: squadRowDelegate
+                  }
+                }
+              }
             }
           }
 
@@ -1059,11 +1704,175 @@ BarWidget {
             spacing: Style.space(4)
             visible: root.benchRows.length > 0
 
-            PanelSectionHeader { text: "BENCH"; foreground: root.bar.foreground }
+            Rectangle {
+              width: parent.width
+              height: benchList.implicitHeight + panelBenchHeader.implicitHeight + Style.space(20)
+              radius: Math.max(Style.cornerRadius, Style.space(8))
+              color: Util.alpha(root.bar.foreground, 0.03)
+
+              Column {
+                anchors.fill: parent
+                anchors.margins: Style.space(10)
+                spacing: Style.space(6)
+
+                PanelSectionHeader { id: panelBenchHeader; text: "BENCH"; foreground: root.bar.foreground }
+
+                Column {
+                  id: benchList
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  Repeater {
+                    model: root.benchRows
+                    delegate: squadRowDelegate
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // ---- fixtures tab ----
+        Column {
+          width: parent.width
+          spacing: Style.space(8)
+          visible: root.currentTab === "fixtures"
+
+          // Matchday snapshot: GW, then played / in-play / to-come counts,
+          // the live count glowing green.
+          Text {
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            text: {
+              var played = 0, live = 0, toCome = 0
+              for (var i = 0; i < root.currentFixtures.length; i++) {
+                var f = root.currentFixtures[i]
+                if (Model.fixtureIsLive(f)) live++
+                else if (f.started) played++
+                else toCome++
+              }
+              var segs = ["<b>GW" + root.currentEventId + "</b>"]
+              if (played > 0) segs.push(played + " FT")
+              if (live > 0) segs.push('<font color="#4ade80"><b>' + live + ' live</b></font>')
+              if (toCome > 0) segs.push(toCome + " to come")
+              return segs.join("  ·  ")
+            }
+            textFormat: Text.StyledText
+            color: Color.muted
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          // FDR legend — the same 1-5 scale FPL's site and every fixture
+          // tool uses: 1 (easiest, green) through 5 (hardest, red).
+          Row {
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Style.space(4)
 
             Repeater {
-              model: root.benchRows
-              delegate: squadRowDelegate
+              model: [1, 2, 3, 4, 5]
+
+              delegate: FdrPill {
+                required property var modelData
+                difficulty: modelData
+              }
+            }
+          }
+
+          Text {
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            text: "FDR · fixture difficulty rating (1 easy — 5 hard)"
+            textFormat: Text.PlainText
+            color: Color.muted
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            text: root.eventStatus === "upcoming"
+              ? "Kickoff times shown · click a started match for scorers"
+              : "Click a match for scorers & assists · dimmed = no squad players"
+            textFormat: Text.PlainText
+            color: Color.muted
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            visible: root.currentFixtures.length === 0
+            text: root.currentEventId ? "Loading fixtures…" : "No gameweek fixtures yet"
+            color: Color.muted
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(2)
+            visible: root.currentFixtures.length > 0
+
+            Repeater {
+              model: root.currentFixtures
+              delegate: fixtureRowDelegate
+            }
+          }
+
+          // ---- next gameweek, opt-in ----
+          Column {
+            width: parent.width
+            spacing: Style.space(2)
+            visible: root.upcomingEventId > 0
+              && (root.nextSquadFixtures.length > 0 || root.nextFixtures.length > 0)
+
+            Item {
+              width: parent.width
+              height: nextGwLabel.implicitHeight + Style.space(6)
+
+              Row {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(6)
+
+                Text {
+                  id: nextGwChevron
+                  text: root.showNextGwFixtures ? "▾" : "▸"
+                  textFormat: Text.PlainText
+                  color: Color.muted
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                }
+
+                Text {
+                  id: nextGwLabel
+                  text: "Next up for your squad · GW" + root.upcomingEventId
+                  textFormat: Text.PlainText
+                  color: root.showNextGwFixtures ? root.bar.foreground : Color.muted
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: root.showNextGwFixtures
+                }
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.showNextGwFixtures = !root.showNextGwFixtures
+              }
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(2)
+              visible: root.showNextGwFixtures
+
+              Repeater {
+                // Squad-relevant fixtures first; if none of your players
+                // have a GW+1 fixture yet, fall back to the full slate.
+                model: root.nextSquadFixtures.length > 0 ? root.nextSquadFixtures : root.nextFixtures
+                delegate: fixtureRowDelegate
+              }
             }
           }
         }
@@ -1090,7 +1899,7 @@ BarWidget {
           Text {
             visible: root.settingsLeagueList.length <= 1
             text: "Your leagues will appear here once your team loads."
-            color: Qt.darker(root.bar.foreground, 1.4)
+            color: Color.muted
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
@@ -1152,7 +1961,7 @@ BarWidget {
               : root.refreshing ? "Updating…"
               : root.lastUpdated ? "Updated " + Model.pad2(root.lastUpdated.getHours()) + ":" + Model.pad2(root.lastUpdated.getMinutes())
               : ""
-            color: root.errorMessage !== "" ? Color.urgent : Qt.darker(root.bar.foreground, 1.5)
+            color: root.errorMessage !== "" ? Color.urgent : Color.muted
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
           }

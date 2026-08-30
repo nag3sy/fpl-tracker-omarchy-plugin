@@ -23,37 +23,66 @@ browser tab.
   captain's ×3, and Bench Boost's bench points are all reflected the moment
   FPL's live data shows them, not whenever FPL's backend gets around to its
   next recalculation pass.
+- **Card-based control-center UI** — a gameweek hero card (points or live
+  deadline countdown, plus a live feed of your own players' goals and
+  assists as they happen), stat tiles for ranks and squad value, and
+  pill-style chip badges, all colored with your Omarchy theme's own tokens.
+- **Season strip** — a hoverable gameweek ruler: played weeks faint, weeks
+  where you played a chip in gold (hover to see which chip), a purple tick
+  where FPL's half-season token allowance resets (~GW20), and this week
+  glowing green while matches are in play.
 - **Full squad breakdown** — starting XI and bench, each player's live
-  points, a ×2/×3 badge when a multiplier applies, and (C)/(V) captain/vice
-  markers, all one click into the Squad tab.
+  points, a ×2/×3 badge when a multiplier applies, captain/vice pills, and
+  this gameweek's £0.1m price moves (▲/▼) on your own players, one click
+  into the Squad tab.
+- **Fixtures tab with live scores and FDR** — every Premier League match of
+  the gameweek with in-play scores, a pulsing live indicator and minute
+  tracker (only while a match is actually in play — finished matches always
+  settle to their final score), kickoff times, and the official 1–5 Fixture
+  Difficulty Rating on both sides. Matches involving teams you own players
+  from are shown at full brightness; the rest are dimmed, so your squad's
+  games stand out at a glance. **Click any started match** to expand a
+  mini match review — goal scorers, assisters, own goals, missed/saved
+  penalties, and bookings — the same events FPL's own live feed tracks.
 - **Chip tracker** — Wildcard, Free Hit, Bench Boost, and Triple Captain at a
-  glance, each shown as **Ready** or **Used (GW N)**. FPL grants one of each
-  chip per half-season; the tracker re-derives which half-season window is
-  current from the live gameweek calendar every refresh, so it flips back to
-  Ready at the gameweek ~20 reset with no special-cased date logic.
+  glance, each shown as a **Ready**, **Active**, or **Used (GW N)** pill —
+  the active chip glows green, the same success green used for positive
+  rank movement throughout. FPL grants one of each chip per half-season;
+  the tracker re-derives which half-season window is current from the live
+  gameweek calendar every refresh, so it flips back to Ready at the
+  gameweek ~20 reset with no special-cased date logic.
 - **Live rank movement** — a LiveFPL-style indicator: your overall rank's
   absolute and percentage change versus the last *completed* gameweek, ▲ or
   ▼, colored with your Omarchy theme's own accent — the widget follows your
-  theme throughout rather than imposing its own palette.
+  theme throughout rather than imposing its own palette (the FDR scale is
+  the one deliberate exception, since green→red is the universal FDR
+  convention).
 - **Pick your leagues** — every classic league you're in shows up with its
   own rank and an up/down arrow by default; the Settings tab lets you hide
   the ones you don't care about, useful if you're in a lot of them.
 - **Jump to the official site** — a Site button opens
   `fantasy.premierleague.com/my-team` directly, for transfers and anything
   else the widget itself doesn't do.
-- **Auto-updating** — live data refreshes every 90 seconds during a
-  gameweek; the calendar and history baseline refresh every 10 minutes. A
-  manual refresh button is always available too.
+- **Auto-updating, and fresh on open** — live data refreshes every 90
+  seconds during a gameweek; the calendar, history baseline, and next-GW
+  fixtures refresh every 10 minutes; and opening the popup always triggers
+  a fresh fetch so you never read stale numbers. A manual refresh button is
+  always available too.
+- **Keybindable** — `omarchy-shell fpl-tracker toggle` (plus `open`,
+  `close`, and `tab overview|squad|fixtures|settings`) can be bound to any
+  key in your Hyprland config.
 - **Zero login, zero config** — only your public Team ID is needed, saved
   locally. No FPL account credentials or API key, ever.
 
 ## Screenshots
 
-<img src="screenshots/bar-pill.png" alt="Bar pill" height="23"> — one click away in the bar.
+| Overview | Squad | Fixtures | Settings |
+| --- | --- | --- | --- |
+| ![Overview tab](screenshots/overview.png) | ![Squad tab](screenshots/squad.png) | ![Fixtures tab](screenshots/fixtures.png) | ![Settings tab](screenshots/settings.png) |
 
-| Overview | Squad | Settings |
-| --- | --- | --- |
-| ![Overview tab](screenshots/overview.png) | ![Squad tab](screenshots/squad.png) | ![Settings tab](screenshots/settings.png) |
+<img src="screenshots/bar-pill.png" alt="Bar pill" height="23"> — one click away in the bar, with your live gameweek points on by default while a gameweek is in play.
+
+<img src="screenshots/setup.png" alt="Setup" width="402"> — onboarding takes seconds: paste your Team ID, done.
 
 ## Setup
 
@@ -107,8 +136,8 @@ Settings choices); delete that file yourself for a clean slate.
 
 ## How it works
 
-Five official, unauthenticated FPL endpoints, polled directly from the
-widget via QML's `XMLHttpRequest` — no helper scripts, no spawned processes,
+Seven official, unauthenticated FPL endpoints, polled directly from the
+widget via QML's `XMLHttpRequest` — no helper scripts for network access,
 no `eval`/shell usage anywhere in the plugin:
 
 | Endpoint | Used for |
@@ -117,7 +146,20 @@ no `eval`/shell usage anywhere in the plugin:
 | `GET /api/entry/{teamId}/event/{eventId}/picks/` | Your picks, captain/vice markers, active chip, transfer cost |
 | `GET /api/event/{eventId}/live/` | Every player's live gameweek points — builds the Squad tab and bench points |
 | `GET /api/entry/{teamId}/history/` | Last gameweek's final overall rank (rank-movement baseline) and your chip-usage history |
-| `GET /api/bootstrap-static/` | Gameweek calendar, player/team/position names, and the season's chip windows — refreshed every 10 minutes, since it's a much larger payload that rarely changes intra-day |
+| `GET /api/bootstrap-static/` | Gameweek calendar, player/team/position names, price moves, and the season's chip windows — refreshed every 10 minutes, since it's a much larger payload that rarely changes intra-day |
+| `GET /api/fixtures/?event={eventId}` | **Current gameweek**: live scores/minutes, match events (goals, assists, cards — for the expandable match review) + official FDR — and **next gameweek** (static, slow-polled): the "next up for your squad" difficulty preview |
+
+The per-gameweek `?event=` form is used deliberately: it returns one
+gameweek's fixture list (~30KB) instead of the megabyte-scale full-season
+`/fixtures/` payload, so both fixture requests are small, bounded, and
+carried by the same mid-transfer size-cap enforcement as every other
+request above. Match-review events (scorers, assists, cards) come from the
+same fixture payload's `stats` array — no additional endpoints.
+
+A note on the fixtures tab's brightness: matches involving teams that
+appear in your current squad are rendered at full brightness, and all
+other matches are dimmed. It's a readability device, not missing data —
+every fixture in the gameweek is shown regardless.
 
 The only other network action is the **Site** button, which opens the
 fixed, hardcoded URL `https://fantasy.premierleague.com/my-team` in your
@@ -152,12 +194,13 @@ number was, and it's fixed.
 
 Planned, not yet built:
 
-- **Fixtures** — match results and live scores for the gameweek, not just
-  your own points.
-- **Price tracking** — flag players in your squad (or on your watchlist)
-  who are likely to rise or fall in value, before it happens.
-- **Fixture difficulty rating** — at-a-glance FDR for every team's next five
-  gameweeks, for transfer and captaincy planning.
+- **Multi-week FDR planner** — the full-season fixture list with difficulty
+  filters, for transfer and chip planning beyond the next gameweek.
+- **Price prediction** — flag players likely to rise or fall *next*, from
+  FPL's own price-change-projection data (the Squad tab already shows this
+  gameweek's moves).
+- **League standings detail** — points behind the leader and the gap to the
+  next rank in each of your leagues.
 
 Have a feature request? Open an issue.
 
@@ -169,13 +212,13 @@ side is in [How it works](#how-it-works) above:
 
 - **No command execution, anywhere.** No `sudo`, `pkexec`, `doas`, `eval`,
   shell invocation, or spawned process exists in this plugin. The entire
-  runtime surface is five `XMLHttpRequest` calls and one
+  runtime surface is seven `XMLHttpRequest` calls and one
   `Qt.openUrlExternally`.
 - **One fixed host, HTTPS only.** Every request goes to the hardcoded
   `fantasy.premierleague.com` — never a user-supplied or discovered URL.
   Your Team ID is validated against `^[1-9][0-9]{0,9}$` before it's used
   anywhere and is always URL-encoded, so it can't redirect a request
-  elsewhere. Every one of the five requests is aborted mid-transfer the
+  elsewhere. Every one of the seven requests is aborted mid-transfer the
   moment its response crosses an endpoint-specific byte cap — checked
   against the declared `Content-Length` as soon as headers arrive, and
   again against bytes buffered so far as the body streams in — rather than
@@ -198,7 +241,10 @@ side is in [How it works](#how-it-works) above:
 - **FPL-sourced text is never treated as rich text.** Team/manager/player/
   league names come from FPL's API and are rendered with
   `textFormat: Text.PlainText` everywhere they're shown, so a crafted name
-  can't be interpreted as markup.
+  can't be interpreted as markup. The two deliberate `StyledText` exceptions
+  (the matchday snapshot and the goal feed) are built entirely from the
+  plugin's own markup, with any FPL-sourced names first stripped of angle
+  brackets — and unknown chip codes from the API are stripped the same way.
 - **No privileges.** Never requests `sudo`/`pkexec`, never touches system
   configuration, and never reads or writes any file other than its own
   settings file above.
