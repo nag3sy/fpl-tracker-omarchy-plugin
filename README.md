@@ -81,7 +81,7 @@ browser tab.
 | --- | --- | --- | --- |
 | ![Overview tab](screenshots/overview.png) | ![Squad tab](screenshots/squad.png) | ![Fixtures tab](screenshots/fixtures.png) | ![Settings tab](screenshots/settings.png) |
 
-<img src="screenshots/bar-pill.png" alt="Bar pill" height="23"> — one click away in the bar, with your live gameweek points on by default while a gameweek is in play.
+<img src="screenshots/bar-pill.png" alt="Bar pill" height="23"> — one click away in the bar. Icon-only by default so it blends with the rest of the bar's glyphs; your live gameweek points can be switched on in Settings.
 
 <img src="screenshots/setup.png" alt="Setup" width="402"> — onboarding takes seconds: paste your Team ID, done.
 
@@ -107,7 +107,9 @@ Click "Edit" in the popup any time to change your Team ID.
 - Network access to `fantasy.premierleague.com` (the official, public FPL
   API — no authentication required for team/league data).
 
-No other dependencies, no bundled binaries, and nothing is installed outside
+No other dependencies beyond Perl (needed by the one bundled helper
+script described in [Security](#security) — Perl ships with every
+mainstream distro), no bundled binaries, and nothing is installed outside
 the plugin's own directory and the one settings file above.
 
 ## Install
@@ -137,9 +139,10 @@ Settings choices); delete that file yourself for a clean slate.
 
 ## How it works
 
-Seven official, unauthenticated FPL endpoints, polled directly from the
+Six official, unauthenticated FPL endpoints, polled directly from the
 widget via QML's `XMLHttpRequest` — no helper scripts for network access,
-no `eval`/shell usage anywhere in the plugin:
+and no `eval` anywhere in the plugin (the one bundled helper script,
+described below, never touches the network):
 
 | Endpoint | Used for |
 | --- | --- |
@@ -212,14 +215,22 @@ security baseline before submission. Summary — full detail on the network
 side is in [How it works](#how-it-works) above:
 
 - **No command execution, anywhere.** No `sudo`, `pkexec`, `doas`, `eval`,
-  shell invocation, or spawned process exists in this plugin. The entire
-  runtime surface is seven `XMLHttpRequest` calls and one
-  `Qt.openUrlExternally`.
+  or shell invocation exists in this plugin. The runtime surface is six
+  `XMLHttpRequest` calls, one `Qt.openUrlExternally`, and a single spawned
+  process: the plugin's own bundled helper script
+  ([scripts/read-state-file](scripts/read-state-file)), executed directly
+  (never via a shell) to read the state file. It's a small Perl script
+  that only ever receives the settings-file path and a byte cap, prints
+  the file's bytes, and touches nothing else — and it's hardened against
+  the file being swapped for a symlink or FIFO between checking and
+  reading, via a single `O_NOFOLLOW|O_NONBLOCK` descriptor whose `fstat()`
+  type/size check and read are done against the same open descriptor, with
+  the cap re-checked during the read itself.
 - **One fixed host, HTTPS only.** Every request goes to the hardcoded
   `fantasy.premierleague.com` — never a user-supplied or discovered URL.
   Your Team ID is validated against `^[1-9][0-9]{0,9}$` before it's used
   anywhere and is always URL-encoded, so it can't redirect a request
-  elsewhere. Every one of the seven requests is aborted mid-transfer the
+  elsewhere. Every one of the six requests is aborted mid-transfer the
   moment its response crosses an endpoint-specific byte cap — checked
   against the declared `Content-Length` as soon as headers arrive, and
   again against bytes buffered so far as the body streams in — rather than
@@ -235,10 +246,12 @@ side is in [How it works](#how-it-works) above:
   `~/.local/state/omarchy/settings/fpl-tracker.json` — the same public data
   anyone can already see on your team's fantasy.premierleague.com page.
   Removing the plugin doesn't delete it; see [Remove](#remove). It's read
-  through Quickshell's `FileView`, which has no size-limited or streaming
-  read of its own — so the plugin refuses to `JSON.parse` it if it's grown
+  through the bundled helper script described above rather than
+  Quickshell's `FileView`, because `FileView` has no size-limited or
+  streaming read of its own — the script refuses to hand back anything
   past a generous 64KB ceiling (this file normally runs a few hundred
-  bytes), falling back to the unconfigured setup prompt instead.
+  bytes), and the widget falls back to the unconfigured setup prompt on
+  any rejected or empty read.
 - **FPL-sourced text is never treated as rich text.** Team/manager/player/
   league names come from FPL's API and are rendered with
   `textFormat: Text.PlainText` everywhere they're shown, so a crafted name
