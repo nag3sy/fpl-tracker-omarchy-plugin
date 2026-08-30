@@ -1,11 +1,12 @@
-# Omarchy FPL Tracker
+# <img src="icon.png" width="40" align="top" alt=""> Omarchy FPL Tracker
 
 ![Omarchy FPL Tracker](header.png)
 
 A bar-widget plugin for [Omarchy](https://omarchy.org/) that turns your
 Fantasy Premier League Team ID into a live gameweek tracker — correct
-captain and chip math, your full squad, rank movement, and every league you
-care about, right in the bar. No login, no API key, just your public Team ID.
+captain and chip math, your full squad, live scores and fixture difficulty,
+rank movement, and every league you care about, right in the bar. No login,
+no API key, just your public Team ID.
 
 ## Why this exists
 
