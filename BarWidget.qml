@@ -31,6 +31,14 @@ BarWidget {
   property var historyCurrent: []
   property var bootstrapChips: []
   property var historyChips: []
+  // True once a bootstrap-static fetch has parsed successfully. The lookup
+  // tables above are only populated from that response, so while this is
+  // false every player/team name renders as its numeric-id fallback
+  // ("Player 426", "?" team shorts). A failed attempt — e.g. the shell
+  // starting before the network is up after a reboot — keeps it false and
+  // drives the short-interval retry timer below; the slow 10-minute
+  // refresh alone would leave names blank for up to ten minutes.
+  property bool bootstrapLoaded: false
   // Raw per-gameweek fixture lists (parsed into view models by derived
   // properties below, since bootstrap's teamsById may land after the
   // fixtures do). Fetched with the lightweight `?event=N` form — see
@@ -322,6 +330,7 @@ BarWidget {
         root.teamsById = Model.indexById(data.teams)
         root.elementTypesById = Model.indexById(data.element_types)
         root.bootstrapChips = data.chips || []
+        root.bootstrapLoaded = true
       } catch (e) {
         // Leave the previous data in place.
       }
@@ -553,6 +562,19 @@ BarWidget {
     onTriggered: { root.fetchBootstrap(); root.fetchHistory(); root.fetchNextFixtures() }
   }
 
+  // Bootstrap retry: the one boot-time fetch (onTeamIdChanged) fails
+  // silently when the shell comes up before the network does — after a
+  // reboot that left player/team names as numeric-id fallbacks until the
+  // slow 10-minute cycle got around to retrying. Until the first
+  // bootstrap-static response parses, retry on a short cadence instead.
+  // The timer self-stops once bootstrapLoaded flips true.
+  Timer {
+    interval: 30000
+    running: root.teamId !== "" && !root.bootstrapLoaded
+    repeat: true
+    onTriggered: root.fetchBootstrap()
+  }
+
   // While matches are in play and the popup is open, poll the fixtures
   // feed on a faster cycle than the 90-second data poll — scores and
   // minutes arrive on FPL's ~60s fixture updates.
@@ -628,6 +650,7 @@ BarWidget {
 
     Text {
       text: "" // fa-futbol-o — plain outline ball, monotone like the rest of the bar icons
+      textFormat: Text.PlainText
       color: root.pillColor
       font.family: root.bar.fontFamily
       font.pixelSize: Style.font.body
@@ -636,6 +659,7 @@ BarWidget {
     Text {
       visible: !root.vertical && root.pillText !== ""
       text: root.pillText
+      textFormat: Text.PlainText
       color: root.pillColor
       font.family: root.bar.fontFamily
       font.pixelSize: Style.font.body
@@ -801,6 +825,7 @@ BarWidget {
         anchors.verticalCenter: parent.verticalCenter
         width: Style.space(30)
         text: modelData.typeShort
+        textFormat: Text.PlainText
         color: Color.muted
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption
@@ -826,6 +851,7 @@ BarWidget {
           visible: squadRowRoot.modelData.multiplier > 1
           anchors.verticalCenter: parent.verticalCenter
           text: "×" + squadRowRoot.modelData.multiplier
+          textFormat: Text.PlainText
           color: root.captainGold
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
@@ -1110,6 +1136,7 @@ BarWidget {
 
         Text {
           text: root.teamId === "" ? "Connect your FPL team" : "Change team ID"
+          textFormat: Text.PlainText
           color: root.bar.foreground
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.subtitle
@@ -1118,6 +1145,7 @@ BarWidget {
 
         Text {
           text: "Find it in the URL when viewing your team on fantasy.premierleague.com — e.g. .../entry/1234567/event/1"
+          textFormat: Text.PlainText
           color: Color.muted
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
@@ -1178,6 +1206,7 @@ BarWidget {
             id: headerIcon
             anchors.verticalCenter: parent.verticalCenter
             text: "" // nf-fa-futbol-o — same glyph as the bar pill, sized up to anchor the header
+            textFormat: Text.PlainText
             color: root.bar.foreground
             font.family: root.bar.fontFamily
             font.pixelSize: Math.round(Style.font.title * 1.5)
@@ -1362,6 +1391,7 @@ BarWidget {
               Text {
                 visible: root.eventStatus !== "upcoming"
                 text: root.livePoints !== null && root.livePoints !== undefined ? String(root.livePoints) : "–"
+                textFormat: Text.PlainText
                 color: root.bar.foreground
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.displayLarge
@@ -1374,6 +1404,7 @@ BarWidget {
                   root.clockTick
                   return Model.formatTimeUntil(root.nextEventMeta ? root.nextEventMeta.deadline_time : "") || "–"
                 }
+                textFormat: Text.PlainText
                 color: root.bar.foreground
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.displayLarge
@@ -1384,6 +1415,7 @@ BarWidget {
                 text: root.eventStatus === "upcoming"
                   ? "until the GW" + root.currentEventId + " deadline" + (root.nextEventMeta ? " · " + Model.formatDeadline(root.nextEventMeta.deadline_time) : "")
                   : "Gameweek points"
+                textFormat: Text.PlainText
                 color: Color.muted
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
@@ -1397,6 +1429,7 @@ BarWidget {
                     : ((root.benchPoints || 0) > 0 ? root.benchPoints + " on bench" : ""),
                   (root.transferCost || 0) > 0 ? "-" + root.transferCost + " transfer cost" : ""
                 ].filter(function(v) { return v !== "" }).join("  ·  ")
+                textFormat: Text.PlainText
                 color: Color.muted
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
@@ -1616,6 +1649,7 @@ BarWidget {
                     Text {
                       visible: modelData.delta !== 0
                       text: modelData.delta > 0 ? "▲" : "▼"
+                      textFormat: Text.PlainText
                       color: modelData.delta > 0 ? root.successGreen : Color.urgent
                       font.family: root.bar.fontFamily
                       font.pixelSize: Style.font.caption
@@ -1623,6 +1657,7 @@ BarWidget {
 
                     Text {
                       text: Model.formatRank(modelData.rank)
+                      textFormat: Text.PlainText
                       color: root.bar.foreground
                       font.family: root.bar.fontFamily
                       font.pixelSize: Style.font.bodySmall
@@ -1662,6 +1697,7 @@ BarWidget {
           Text {
             visible: root.squadRows.length === 0
             text: root.picksData ? "No picks for this gameweek" : "Loading squad…"
+            textFormat: Text.PlainText
             color: Color.muted
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
@@ -1804,6 +1840,7 @@ BarWidget {
           Text {
             visible: root.currentFixtures.length === 0
             text: root.currentEventId ? "Loading fixtures…" : "No gameweek fixtures yet"
+            textFormat: Text.PlainText
             color: Color.muted
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
@@ -1899,6 +1936,7 @@ BarWidget {
           Text {
             visible: root.settingsLeagueList.length <= 1
             text: "Your leagues will appear here once your team loads."
+            textFormat: Text.PlainText
             color: Color.muted
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
@@ -1961,6 +1999,7 @@ BarWidget {
               : root.refreshing ? "Updating…"
               : root.lastUpdated ? "Updated " + Model.pad2(root.lastUpdated.getHours()) + ":" + Model.pad2(root.lastUpdated.getMinutes())
               : ""
+            textFormat: Text.PlainText
             color: root.errorMessage !== "" ? Color.urgent : Color.muted
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
